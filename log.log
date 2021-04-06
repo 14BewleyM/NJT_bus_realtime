@@ -1,0 +1,16 @@
+INFO:root:Logging started at 2021-04-06 19:10:09.306765
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv
+INFO:root:Dataset spans 2021-03-29 06:00:08.709000 to 2021-03-30 10:19:52.543000
+INFO:root:Number of unique routes: 148
+INFO:root:Logging started at 2021-04-06 19:17:10.158642
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv
+INFO:root:Dataset spans 2021-03-29 06:00:08.709000 to 2021-03-30 10:19:52.543000
+INFO:root:Number of unique routes: 148
+INFO:root:Logging started at 2021-04-06 19:37:58.471930
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv
+INFO:root:Dataset spans 2021-03-29 06:00:08.709000 to 2021-03-30 10:19:52.543000
+INFO:root:Number of unique routes: 148
+INFO:root:Logging started at 2021-04-06 19:43:17.430553
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv
+INFO:root:Dataset spans 2021-03-29 06:00:08.709000 to 2021-03-30 10:19:52.543000
+INFO:root:Number of unique routes: 148

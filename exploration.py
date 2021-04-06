@@ -32,6 +32,7 @@ from datetime import datetime
 import gtfs_functions as gtfs
 import webbrowser
 import folium
+import os
 
 # %% some initial settings
 generate_maps = 0
@@ -151,7 +152,7 @@ service_headsigns = trips_full.groupby(by="trip_headsign")["service_id"].max().r
 # in the trips GTFS file, you have shape_idf and trip_headsign
 # so the two of those should be enough??
 # number of unique headsigns per route given by
-trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len)
+unique_headsigns = trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len)
 trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len).sum() # total
 # number of unique combinations of service id, route id, and direction id given by
 trips_full.groupby(by=["service_id", "route_id", "direction_id"]).size().reset_index().rename(columns={0:"count"})
@@ -160,6 +161,9 @@ trips_full.groupby(by=["route_id", "service_id", "trip_headsign"]).size()
 # service id doesn't correspond perfectly with headsign. The same headsign will appear under different service ideas for a single route
 # DOESN'T HAVE ANYTING TO DO WITH SERVICE ID, which identifies dates when services are available, come on RTFM: https://developers.google.com/transit/gtfs/reference
 # REMOVE THESE THINGS AND NOTE IN PUSH 
+
+# calendar dates to sort out how service ids are distributed
+pd.crosstab(trips_full.route_id, trips_full.service_id)
 
 #trips = pd.merge(left=trips, right=trips_full[["service_id", "trip_headsign"]], on="service_id", how="left") # add headsign from original GTFS trips file to gdf created by gtfs_functions 
 #trips.join(trips_full[["service_id", "trip_headsign"]], on="service_id", how="inner")
@@ -194,6 +198,3 @@ trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len).sum() # t
 # number of unique combinations of service id, route id, and direction id given by
 trips_full.groupby(by=["service_id", "route_id", "direction_id"]).size().reset_index().rename(columns={0:"count"})
 # almost the same
-
-
-# %%
