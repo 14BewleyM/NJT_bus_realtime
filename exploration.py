@@ -160,14 +160,8 @@ if generate_maps==1:
 # %% comparing returned headsigns with GTFS headsigns
 # if they have headsigns in common, it'll be much easier to make the vehicle positions to GTFS service patterns
 trips_full = pd.read_csv("C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs/trips.txt")
-trips_full["service_id"] = trips_full["service_id"].astype(str)
-service_headsigns = trips_full.groupby(by="trip_headsign")["service_id"].max().reset_index() # assumes each trip headsign is matched to only one service id
-# WAIT WAIT probably you have to merge or join on combination of route id, service id, and direction id
-# NO WAIT what are you trying to get
-# trying to get geometry associated with headsign, so taht you can match the points you get from NJT with a specific route shape
-# in shapes gdf, you alrfeady have shape_id and geometry
-# in the trips GTFS file, you have shape_idf and trip_headsign
-# so the two of those should be enough??
+trips_full = trips_full.astype(str)
+trips_full = pd.merge(trips_full, routes[["route_id", "route_short_name"]], on="route_id")
 
 # number of unique headsigns per route from gtfs given by:
 unique_headsigns_gtfs = trips_full.groupby(by=["route_short_name"])["trip_headsign"].unique().apply(len).reset_index().sort_values(by="route_short_name").rename(columns={"trip_headsign": "headsign_count"})
@@ -206,7 +200,7 @@ unique_headsigns_buspositions = unique_headsigns_buspositions.rename(columns={"r
 headsigns_merged = pd.merge(unique_headsigns_buspositions, unique_headsigns_gtfs, on="route_short_name", suffixes=("_buspositions", "_gtfs"))
 
 # compare busposition and gtfs headsigns
-headsigns_merged.headsigns_buspositions.compare(headsigns_merged.headsigns_gtfs)
+# headsigns_merged.headsigns_buspositions.compare(headsigns_merged.headsigns_gtfs)
 def intersect_pandas_series(left_series, right_series):
     """
     Takes in two pandas series (each containing lists and of the same length) and returns the intersections of all their elements as a pandas series.
@@ -226,6 +220,33 @@ headsigns_merged["intersection_count"] = headsigns_merged.headsign_intersection.
 # find routes where the headsigns match completely (ie lengths of both groups of headsigns and their intersections are all the same)
 matching_headsigns = headsigns_merged[(headsigns_merged.headsign_count_buspositions == headsigns_merged.intersection_count) & (headsigns_merged.headsign_count_gtfs == headsigns_merged.intersection_count)]
 print(f"Headsigns match for {matching_headsigns.shape[0]} of {headsigns_merged.shape[0]} routes")
+matched_route_numbers = matching_headsigns.route_short_name.unique()
+# these are the routes the analysis will be run with (before manual matching of headsigns can be done)
+# because the matchup allows bus position measurements to be matched with gtfs route shapes
+
+# %% match gtfs route shapes to headsigns and then to bus position measurements
+buspositions = buspositions[buspositions.route_number.isin(matched_route_numbers)]
+headsign_shapes = trips_full[trips_full.route_short_name.isin(matched_route_numbers)][["route_short_name", "trip_headsign", "direction_id", "shape_id"]]
+headsign_shapes = headsign_shapes.drop_duplicates()
+# edit headsigns in new dataframes to match buspositions format, using pattern from above
+headsign_shapes["trip_headsign"] = headsign_shapes["trip_headsign"].apply(lambda x: re.sub(r"[ ]*-[ ]*[Ee]x.*", "", x))
+# change dtypes to more appropriate types
+headsign_shapes[["direction_id", "shape_id"]] = headsign_shapes[["direction_id", "shape_id"]].astype(str)
+# there are still multiple shapes per headsign
+# maybe (hopefully) these are just different parts of what is basically a single shape
+# in that case, can just merge them to create one shape per headsign (assuming each headsign corresponds to only one direction)
+
+# comparing shape ids to see if they all match up
+len(set(headsign_shapes.shape_id.unique()) - set(shapes.shape_id.unique()))
+len(set(headsign_shapes.shape_id.unique()) - set(trips.shape_id.unique()))
+len(set(headsign_shapes.shape_id.unique()) - set(trips_full.shape_id.unique()))
+# for some reason, there seem to be trip ids in the full trips csv that aren't present in the dfs produced by gtfs_functions
+
+# merge in geometry
+headsign_shapes = pd.merge(headsign_shapes, shapes, on="shape_id")
+
+
+
 
 # %% some basic summary
 
