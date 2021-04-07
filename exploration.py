@@ -32,7 +32,7 @@ import pandas as pd
 import geopandas as gpd
 import numpy as np
 import logging
-from datetime import datetime
+import datetime
 import gtfs_functions as gtfs
 import webbrowser
 import folium
@@ -49,7 +49,7 @@ data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_s
 logging.basicConfig(filename="log.log", 
                     level=logging.INFO) # set to INFO if you want info messages to log
 
-logging.info(f"Logging started at {datetime.now()}")
+logging.info(f"Logging started at {datetime.datetime.now()}")
 
 # %% load data and setup dataframe
 logging.info(f"Reading in data from {data_path}")
@@ -57,6 +57,7 @@ logging.info(f"Reading in data from {data_path}")
 buspositions = gpd.GeoDataFrame(pd.read_csv(data_path), 
                       geometry=gpd.points_from_xy(pd.read_csv(data_path).lat, pd.read_csv(data_path).lon))
 buspositions.crs = {"init": "epsg:4326"}
+print(f"Initial dataset has {buspositions.shape[0]} records")
 
 # set timestamp column to be datetime       
 buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
@@ -89,7 +90,16 @@ print(f"There are {duplicate_count} observations with duplicate vehicle ids and 
 # drop all except first duplicate for each vehicle
 print(f"Dropping {duplicate_count} duplicates")
 buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["vehicle_id", "geometry"], keep="first")]
+print(f"Final dataset has {buspositions.shape[0]} records")
 
+# create time elapsed column
+buspositions["month"] = buspositions.timestamp.dt.month
+buspositions["day"] = buspositions.timestamp.dt.day
+print(f"Creating elapsed time column")
+buspositions["time_elapsed"] = buspositions.sort_values(by=["timestamp", "vehicle_id", "run_number"]).groupby(by=["month", "day", "vehicle_id", "run_number"])["timestamp"].diff().fillna(0)
+# testing for negative times
+negative_times = (buspositions.time_elapsed < datetime.timedelta(0)).sum()
+print(f"{negative_times} records calculated with negative elapsed time")
 
 # %% load gtfs (including route shapes)
 routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
