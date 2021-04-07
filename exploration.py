@@ -31,6 +31,7 @@
 import pandas as pd
 import geopandas as gpd
 import numpy as np
+from shapely.geometry import Point, LineString
 import logging
 import datetime
 import gtfs_functions as gtfs
@@ -242,10 +243,22 @@ len(set(headsign_shapes.shape_id.unique()) - set(trips.shape_id.unique()))
 len(set(headsign_shapes.shape_id.unique()) - set(trips_full.shape_id.unique()))
 # for some reason, there seem to be trip ids in the full trips csv that aren't present in the dfs produced by gtfs_functions
 
+# just construct the shapes yourself, see here for basic procedure: https://www.stevencanplan.com/2016/02/converting-a-transit-agencys-gtfs-to-shapefile-and-geojson-with-qgis/
+# should be easy enough with geopandas, group by route and create list from points in sequence order, and then LineString: https://stackoverflow.com/questions/51071365/convert-points-to-lines-geopandas
+shapes_full_csv = pd.read_csv("C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs/shapes.txt")
+shapes_full_csv.shape_id = shapes_full_csv.shape_id.astype(str)
+geometry_gtfs = gpd.points_from_xy(x=shapes_full_csv.shape_pt_lon, y=shapes_full_csv.shape_pt_lat) # create points from latlon
+shapes_full = gpd.GeoDataFrame(shapes_full_csv, geometry=geometry_gtfs) # add points to create geodataframe
+
+shapes_full = shapes_full.sort_values(by="shape_pt_sequence").groupby(by=["shape_id"])["geometry"].apply(lambda x: LineString(x.tolist())).reset_index()
+# check ids like above
+len(set(headsign_shapes.shape_id.unique()) - set(shapes_full_csv.shape_id.unique()))
+len(set(headsign_shapes.shape_id.unique()) - set(shapes_full.shape_id.unique()))
+# good, complete overlap this time
+
 # merge in geometry
-headsign_shapes = pd.merge(headsign_shapes, shapes, on="shape_id")
-
-
+headsign_shapes = pd.merge(headsign_shapes, shapes_full, on="shape_id")
+headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
 
 
 # %% some basic summary
