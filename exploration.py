@@ -96,7 +96,7 @@ print(f"Final dataset has {buspositions.shape[0]} records")
 buspositions["month"] = buspositions.timestamp.dt.month
 buspositions["day"] = buspositions.timestamp.dt.day
 print(f"Creating elapsed time column")
-buspositions["time_elapsed"] = buspositions.sort_values(by=["timestamp", "vehicle_id", "run_number"]).groupby(by=["month", "day", "vehicle_id", "run_number"])["timestamp"].diff().fillna(0)
+buspositions["time_elapsed"] = buspositions.sort_values(by=["timestamp", "vehicle_id", "run_number"]).groupby(by=["month", "day", "vehicle_id", "run_number"])["timestamp"].diff().fillna(pd.Timedelta(seconds=0))
 # testing for negative times
 negative_times = (buspositions.time_elapsed < datetime.timedelta(0)).sum()
 print(f"{negative_times} records calculated with negative elapsed time")
