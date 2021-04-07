@@ -37,6 +37,7 @@ import gtfs_functions as gtfs
 import webbrowser
 import folium
 import os
+import re
 
 # %% some initial settings
 generate_maps = 0
@@ -156,6 +157,55 @@ if generate_maps==1:
     m.save("map.html")
     webbrowser.open_new("map.html")
 
+# %% comparing returned headsigns with GTFS headsigns
+# if they have headsigns in common, it'll be much easier to make the vehicle positions to GTFS service patterns
+trips_full = pd.read_csv("C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs/trips.txt")
+trips_full["service_id"] = trips_full["service_id"].astype(str)
+service_headsigns = trips_full.groupby(by="trip_headsign")["service_id"].max().reset_index() # assumes each trip headsign is matched to only one service id
+# WAIT WAIT probably you have to merge or join on combination of route id, service id, and direction id
+# NO WAIT what are you trying to get
+# trying to get geometry associated with headsign, so taht you can match the points you get from NJT with a specific route shape
+# in shapes gdf, you alrfeady have shape_id and geometry
+# in the trips GTFS file, you have shape_idf and trip_headsign
+# so the two of those should be enough??
+
+# number of unique headsigns per route from gtfs given by:
+unique_headsigns_gtfs = trips_full.groupby(by=["route_short_name"])["trip_headsign"].unique().apply(len).reset_index().sort_values(by="route_short_name").rename(columns={"trip_headsign": "headsign_count"})
+unique_headsigns_gtfs["headsigns"] = trips_full.groupby(by=["route_short_name"])["trip_headsign"].unique().reset_index()["trip_headsign"] # column to hold lists of headsigns
+trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len).sum() # total
+# by direction and headsign
+trips_full.groupby(by=["direction_id", "trip_headsign"]).size().reset_index().rename(columns={0:"count"})
+
+# headsigns from vehicle measurements
+unique_headsigns_buspositions = buspositions.groupby(by="route_number")["headsign"].unique().apply(len).reset_index().sort_values(by="route_number").rename(columns={"headsign": "headsign_count"})
+unique_headsigns_buspositions["headsigns"] = buspositions.groupby(by=["route_number"])["headsign"].unique().reset_index()["headsign"] 
+
+# compare routes from gtfs with routes from vehicle measurements
+# concerned there may be some route numbers returned in vehicle measurements that don't exist in gtfs as short names
+route_diff_buspos_gtfs = set(unique_headsigns_buspositions.route_number.unique()) - set(unique_headsigns_gtfs.route_short_name.unique())
+print(f"Following routes are present in bus position dataset but not in GTFS: {route_diff_buspos_gtfs}")
+route_diff_gtfs_buspos = set(unique_headsigns_gtfs.route_short_name.unique()) - set(unique_headsigns_buspositions.route_number.unique())
+# just drop those two routes, it's not many
+print(f"Dropping those {len(route_diff_buspos_gtfs)} routes")
+buspositions = buspositions[~buspositions.route_number.isin(route_diff_buspos_gtfs)]
+
+# compare headsign counts for both sets of routes
+# drop routes not present in buspositions
+unique_headsigns_buspositions = unique_headsigns_buspositions[~unique_headsigns_buspositions.route_number.isin(route_diff_buspos_gtfs)]
+# drop routes not present in GTFS, and strip variants of "-Exact fare" as well as trailing and leading spaces
+unique_headsigns_gtfs = unique_headsigns_gtfs[unique_headsigns_gtfs.route_short_name.isin(unique_headsigns_buspositions.route_number.unique())]
+def split_in_list(patt, repl, list):
+    newlist = []
+    for element in list: 
+        newlist.append(re.sub(patt, repl, element))
+        #list[element] = element
+    return newlist
+unique_headsigns_gtfs["headsigns"] = unique_headsigns_gtfs["headsigns"].apply(lambda x: split_in_list(r"[ ]*-[ ]*[Ee]x.*", "", x))
+# compare the two dataframes
+unique_headsigns_buspositions = unique_headsigns_buspositions.rename(columns={"route_number": "route_short_name"})
+headsigns_merged = pd.merge(unique_headsigns_buspositions, unique_headsigns_gtfs, on="route_short_name", suffixes=("_buspositions", "_gtfs"))
+
+
 # %% some basic summary
 
 first_observation = buspositions.timestamp.min()
@@ -170,6 +220,8 @@ logging.info(f"Number of unique routes: {len(unique_routes)}")
 # associate each point with the nearest dissolved gtfs shape of the same route
 
 # calculate distance covered between measurements
+# probably want to use or consult gtfs_functions' cut_gtfs at some point: https://github.com/Bondify/gtfs_functions/blob/master/gtfs_functions/gtfs_funtions.py
+
 #distance_between_measurements = # need to attach to gtfs shapes first
 ## FIRST calculate length of each route (BUT this is complicated bc not every trip goes the same distance along a route...)
 ## THEN interpolate from points to points along each line (see here: https://gis.stackexchange.com/questions/306838/snap-points-shapefile-to-line-shapefile-using-shapely)
@@ -211,34 +263,3 @@ pd.crosstab(trips_full.route_id, trips_full.service_id)
 
 #trips = pd.merge(left=trips, right=trips_full[["service_id", "trip_headsign"]], on="service_id", how="left") # add headsign from original GTFS trips file to gdf created by gtfs_functions 
 #trips.join(trips_full[["service_id", "trip_headsign"]], on="service_id", how="inner")
-
-# group by date then by vehicle (and maybe then by run?) and sort ascending by time
-# by date so that trips that measurements that straddle midnight don't confuse things
-# this should give groups that can be iterated over to find time elapsed and distance covered btw measurements
-daily_vehicle_groups = buspositions.sort_values(by="timestamp", ascending=True).groupby([buspositions.timestamp.dt.date, "vehicle_id"])
-
-# calculate time elapsed between measurements
-# ONLY FOR THOSE POINTS THAT WERE SUCCESSFULLY SNAPPED
-#buspositions["time_between_measurements"] = daily_vehicle_groups.timestamp.diff() #.fillna(0)
-
-# probably want to use or consult gtfs_functions' cut_gtfs at some point: https://github.com/Bondify/gtfs_functions/blob/master/gtfs_functions/gtfs_funtions.py
-
-# %% do headsigns returned from web match up with GTFS headsigns?
-# if they have headsigns in common, it'll be much easier to make the vehicle positions to GTFS service patterns
-trips_full = pd.merge(trips_full.astype({"route_id": "string"}), routes[["route_id", "route_short_name"]], on="route_id")
-trips_full[trips_full["route_id"]=="1"]["trip_headsign"].unique()
-buspositions[buspositions["route_number"]==1]["headsign"].unique()
-# seemingly they all match, except GTFS includes "-Exact Fare" on the ends
-# could just split at "-" and have the same names, looks like
-for headsign in trips_full[trips_full["route_id"]=="1"]["trip_headsign"].unique():
-    print(headsign.rsplit("-")[0])
-# ALMOST ALL the same, but some differences,
-# for example, there is a pattern that's "1 NWRK 16TH ST" in buspositions, but "1 NEWARK 16TH ST" in GTFS
-# SHOULD ALSO STRIP BEGINNING AND ENDING SPACES, bc the spacing around the "-" isn't completely consistent
-
-# number of unique headsigns per route given by
-trips_full.groupby(by="route_short_name")["trip_headsign"].unique().apply(len)
-trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len).sum() # total
-# number of unique combinations of service id, route id, and direction id given by
-trips_full.groupby(by=["service_id", "route_id", "direction_id"]).size().reset_index().rename(columns={0:"count"})
-# almost the same
