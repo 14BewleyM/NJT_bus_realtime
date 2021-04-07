@@ -201,10 +201,31 @@ def split_in_list(patt, repl, list):
         #list[element] = element
     return newlist
 unique_headsigns_gtfs["headsigns"] = unique_headsigns_gtfs["headsigns"].apply(lambda x: split_in_list(r"[ ]*-[ ]*[Ee]x.*", "", x))
-# compare the two dataframes
+# new dataframe merging headsigns etc from both datasets
 unique_headsigns_buspositions = unique_headsigns_buspositions.rename(columns={"route_number": "route_short_name"})
 headsigns_merged = pd.merge(unique_headsigns_buspositions, unique_headsigns_gtfs, on="route_short_name", suffixes=("_buspositions", "_gtfs"))
 
+# compare busposition and gtfs headsigns
+headsigns_merged.headsigns_buspositions.compare(headsigns_merged.headsigns_gtfs)
+def intersect_pandas_series(left_series, right_series):
+    """
+    Takes in two pandas series (each containing lists and of the same length) and returns the intersections of all their elements as a pandas series.
+    Elements you want to compare should have the same index values.
+    """
+    intersection_list = []
+    left_list = list(left_series)
+    right_list = list(right_series)
+
+    for element in left_series.index:
+        intersection_list.append(list(set(left_list[element]).intersection(set(right_list[element]))))
+    new_series = pd.Series(intersection_list)
+    return new_series
+
+headsigns_merged["headsign_intersection"] = intersect_pandas_series(headsigns_merged.headsigns_buspositions, headsigns_merged.headsigns_gtfs)
+headsigns_merged["intersection_count"] = headsigns_merged.headsign_intersection.apply(len)
+# find routes where the headsigns match completely (ie lengths of both groups of headsigns and their intersections are all the same)
+matching_headsigns = headsigns_merged[(headsigns_merged.headsign_count_buspositions == headsigns_merged.intersection_count) & (headsigns_merged.headsign_count_gtfs == headsigns_merged.intersection_count)]
+print(f"Headsigns match for {matching_headsigns.shape[0]} of {headsigns_merged.shape[0]} routes")
 
 # %% some basic summary
 
