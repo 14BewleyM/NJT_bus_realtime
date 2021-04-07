@@ -61,6 +61,30 @@ buspositions.crs = {"init": "epsg:4326"}
 # set timestamp column to be datetime       
 buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
 
+# set other data types
+buspositions.vehicle_id = buspositions.vehicle_id.astype(str).str.split(".").str[0]
+buspositions.route_number = buspositions.route_number.astype(str).str.split(".").str[0] 
+
+# drop observations for routes that returned no service
+print(f"Dropping {buspositions.shape[0] - buspositions.has_service.sum()} observations from routes with no service")
+buspositions = buspositions[buspositions.has_service==True]
+
+# some headsigns had ampersand replaced with &amp;amp;
+# put ampersand back
+buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
+
+# check for duplicate coordinates in reduced dataframe, to get a sense of the potential problem
+# mark the first duplicate, assuming that every duplicate afterwards erroneously suggests vehicle isn't moving
+duplicate_count = buspositions.duplicated(subset="geometry", keep="first").sum()
+print(f"There are {duplicate_count} observations with duplicate geometries")
+# wow, 942297 duplicates
+# BUT at least some of these are legit (eg different vehicles on different runs somehow reporting exactly the same coordinates)
+# so should subset by vehicle id as well as geometry
+duplicate_count = buspositions.duplicated(subset=["vehicle_id", "geometry"], keep="first").sum()
+print(f"There are {duplicate_count} observations with duplicate vehicle ids and geometries")
+
+buspositions[buspositions.duplicated(subset=["vehicle_id", "geometry"], keep=False)].sort_values(by="vehicle_id")
+
 # select every 4th observation, for each vehicle (assuming that vehicle numbers are unique across routes)
 # every 4th observation should reduce or eliminate cases where a moving vehicle doesn't update its position but is measured multiple times
 # if didn't need to group, could do .iloc[::4,:] on sorted 
@@ -72,9 +96,7 @@ buspositions["flag"] = buspositions.sort_values(by=["vehicle_id", "timestamp"]).
 buspositions = buspositions[(buspositions.flag % take_every_n) == 0]
 print(f"There are {buspositions.shape[0]} bus position observations after resampling, consuming {buspositions.memory_usage(deep=True).sum() / 1000000} MB")
 
-# check for duplicate coordinates in reduced dataframe, to get a sense of the potential problem
-# mark the first duplicate, assuming that every duplicate afterwards erroneously suggests vehicle isn't moving
-buspositions.duplicated(subset="geometry", keep="first")
+
 
 # %% load gtfs (including route shapes)
 routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
