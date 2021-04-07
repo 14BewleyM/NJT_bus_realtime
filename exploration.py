@@ -260,6 +260,23 @@ len(set(headsign_shapes.shape_id.unique()) - set(shapes_full.shape_id.unique()))
 headsign_shapes = pd.merge(headsign_shapes, shapes_full, on="shape_id")
 headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
 
+# now can add shapeid to buspositions dataset (and also geometry)
+# but is that what you need to do to interpolate?
+
+# calculate distance covered between measurements
+# may want to use or consult gtfs_functions' cut_gtfs at some point: https://github.com/Bondify/gtfs_functions/blob/master/gtfs_functions/gtfs_funtions.py
+## FIRST calculate length of each route (BUT this is complicated bc not every trip goes the same distance along a route...)
+## THEN interpolate from points to points along each line (see here: https://gis.stackexchange.com/questions/306838/snap-points-shapefile-to-line-shapefile-using-shapely)
+## (see also here: https://shapely.readthedocs.io/en/stable/manual.html)
+## THEN can multiply fraction of total route length by total route length to get cumulative distance to each measured vehicle position
+## use that for calculating distance traveled between each measurement
+
+#distance_between_measurements = # need to attach to gtfs shapes first
+
+# interpolate busposition points to lines based on headsign and shape ids
+# https://stackoverflow.com/questions/33769860/pandas-apply-but-only-for-rows-where-a-condition-is-met
+# gotta iterate somehow, or use headsign_shapes dataframe as condition in lambda function idk
+#buspositions["geometry_interpolated"] = buspositions.apply(lambda row: row.headsign)
 
 # %% some basic summary
 
