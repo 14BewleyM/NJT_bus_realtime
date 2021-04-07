@@ -83,19 +83,12 @@ print(f"There are {duplicate_count} observations with duplicate geometries")
 duplicate_count = buspositions.duplicated(subset=["vehicle_id", "geometry"], keep="first").sum()
 print(f"There are {duplicate_count} observations with duplicate vehicle ids and geometries")
 
-buspositions[buspositions.duplicated(subset=["vehicle_id", "geometry"], keep=False)].sort_values(by="vehicle_id")
+# dataframe for examining all duplicates next to each other
+#buspositions[buspositions.duplicated(subset=["vehicle_id", "geometry"], keep=False)].sort_values(by=["vehicle_id", "lat", "timestamp"])
 
-# select every 4th observation, for each vehicle (assuming that vehicle numbers are unique across routes)
-# every 4th observation should reduce or eliminate cases where a moving vehicle doesn't update its position but is measured multiple times
-# if didn't need to group, could do .iloc[::4,:] on sorted 
-# df.index % 4 == 0 should return true for every 4th record
-# in the end, probably best to use groupby.cumcount(): https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.core.groupby.GroupBy.cumcount.html
-take_every_n = 3 # will take every n + 1th entry within groups as defined below
-print(f"There are {buspositions.shape[0]} bus position observations before resampling, consuming {buspositions.memory_usage(deep=True).sum() / 1000000} MB")
-buspositions["flag"] = buspositions.sort_values(by=["vehicle_id", "timestamp"]).groupby(by=["vehicle_id"]).cumcount()
-buspositions = buspositions[(buspositions.flag % take_every_n) == 0]
-print(f"There are {buspositions.shape[0]} bus position observations after resampling, consuming {buspositions.memory_usage(deep=True).sum() / 1000000} MB")
-
+# drop all except first duplicate for each vehicle
+print(f"Dropping {duplicate_count} duplicates")
+buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["vehicle_id", "geometry"], keep="first")]
 
 
 # %% load gtfs (including route shapes)
