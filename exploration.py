@@ -11,6 +11,8 @@
 # https://geoscripting-wur.github.io/PythonVector/
 # https://www.earthdatascience.org/tags/time-series/
 
+# managing memory with chunking: https://towardsdatascience.com/loading-large-datasets-in-pandas-11bdddd36f7b
+
 # %% TODO
 # use resample to select measurements every minute or so: https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.resample.html
 # also here: https://towardsdatascience.com/using-the-pandas-resample-function-a231144194c4
@@ -22,6 +24,8 @@
 
 # nyc bus dashboard speed calculation: https://github.com/Bus-Data-NYC/nyc-bus-stats/blob/master/sql/speed.sql
 # paper with some technical notes on calculating speeds for transit vehicles using AVL: https://sci-hub.do/10.1109/ictis.2017.8047744
+
+# movingpandas for calculating speeds and things: https://anitagraser.com/movingpandas/
 
 # %% modules
 import pandas as pd
@@ -56,6 +60,21 @@ buspositions.crs = {"init": "epsg:4326"}
 
 # set timestamp column to be datetime       
 buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
+
+# select every 4th observation, for each vehicle (assuming that vehicle numbers are unique across routes)
+# every 4th observation should reduce or eliminate cases where a moving vehicle doesn't update its position but is measured multiple times
+# if didn't need to group, could do .iloc[::4,:] on sorted 
+# df.index % 4 == 0 should return true for every 4th record
+# in the end, probably best to use groupby.cumcount(): https://pandas.pydata.org/pandas-docs/stable/reference/api/pandas.core.groupby.GroupBy.cumcount.html
+take_every_n = 3 # will take every n + 1th entry within groups as defined below
+print(f"There are {buspositions.shape[0]} bus position observations before resampling, consuming {buspositions.memory_usage(deep=True).sum() / 1000000} MB")
+buspositions["flag"] = buspositions.sort_values(by=["vehicle_id", "timestamp"]).groupby(by=["vehicle_id"]).cumcount()
+buspositions = buspositions[(buspositions.flag % take_every_n) == 0]
+print(f"There are {buspositions.shape[0]} bus position observations after resampling, consuming {buspositions.memory_usage(deep=True).sum() / 1000000} MB")
+
+# check for duplicate coordinates in reduced dataframe, to get a sense of the potential problem
+# mark the first duplicate, assuming that every duplicate afterwards erroneously suggests vehicle isn't moving
+buspositions.duplicated(subset="geometry", keep="first")
 
 # %% load gtfs (including route shapes)
 routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
@@ -152,7 +171,7 @@ service_headsigns = trips_full.groupby(by="trip_headsign")["service_id"].max().r
 # in the trips GTFS file, you have shape_idf and trip_headsign
 # so the two of those should be enough??
 # number of unique headsigns per route given by
-unique_headsigns = trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len)
+unique_headsigns = trips_full.groupby(by=["route_id"])["trip_headsign"].unique().apply(len).sort_values(ascending=False)
 trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len).sum() # total
 # number of unique combinations of service id, route id, and direction id given by
 trips_full.groupby(by=["service_id", "route_id", "direction_id"]).size().reset_index().rename(columns={0:"count"})
