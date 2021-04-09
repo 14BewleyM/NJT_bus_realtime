@@ -43,6 +43,10 @@ import re
 # %% some initial settings
 generate_maps = 0
 
+# setting some important directories
+main_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper"
+code_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/code"
+
 # %% directories and filepaths
 gtfs_directory = "C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs"
 data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv"
@@ -259,6 +263,23 @@ len(set(headsign_shapes.shape_id.unique()) - set(shapes_full.shape_id.unique()))
 # merge in geometry
 headsign_shapes = pd.merge(headsign_shapes, shapes_full, on="shape_id")
 headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
+headsign_shapes.crs = {"init": "epsg:4326"}
+# export to geopackage for visual inspection
+# os.chdir(main_directory)
+# headsign_shapes.to_file("headsign_shapes.gpkg", driver="GPKG")
+# os.chdir(code_directory)
+
+
+# TODO@14BewleyM Need to make sure there are no headsigns associated with both inbound and outbound direction
+# bc you're relying on that for matching the busposition data to the gtfs shapes
+# are there any headsigns that have some value other than zero for both the 0 and 1 columns?
+headsign_direction_crosstab = pd.crosstab(headsign_shapes.trip_headsign, headsign_shapes.direction_id).reset_index().rename(columns={"0": "direction0", "1": "direction1"})
+number_headsigns_two_directions = headsign_direction_crosstab[(headsign_direction_crosstab.direction0!=0) & (headsign_direction_crosstab.direction1!=0)].shape[0]
+print(f"There are {number_headsigns_two_directions} headsigns associated with more than one direction")
+print(f"Headsigns with both inbound and outbound shapes are: \n {headsign_direction_crosstab[(headsign_direction_crosstab.direction0!=0) & (headsign_direction_crosstab.direction1!=0)].trip_headsign}")
+# currently, there are 4 routes with headsigns that are associated with both inbound and outbound directions
+# from examining the 29, can at least tell that 0 seems to be inbound and 1 outbound
+# look into how geopandas or shapely or movingpandas would calculate the distance btw two points on a line to see if this would cause problems after you merge shapes
 
 # now can add shapeid to buspositions dataset (and also geometry)
 # but is that what you need to do to interpolate?
