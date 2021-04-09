@@ -263,7 +263,12 @@ headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
 # now can add shapeid to buspositions dataset (and also geometry)
 # but is that what you need to do to interpolate?
 
-# calculate distance covered between measurements
+# interpolate busposition points to lines based on headsign and shape ids
+# https://stackoverflow.com/questions/33769860/pandas-apply-but-only-for-rows-where-a-condition-is-met
+# gotta iterate somehow, or use headsign_shapes dataframe as condition in lambda function idk
+#buspositions["geometry_interpolated"] = buspositions.apply(lambda row: row.headsign)
+
+#%% calculate distance covered between measurements
 # may want to use or consult gtfs_functions' cut_gtfs at some point: https://github.com/Bondify/gtfs_functions/blob/master/gtfs_functions/gtfs_funtions.py
 ## FIRST calculate length of each route (BUT this is complicated bc not every trip goes the same distance along a route...)
 ## THEN interpolate from points to points along each line (see here: https://gis.stackexchange.com/questions/306838/snap-points-shapefile-to-line-shapefile-using-shapely)
@@ -273,10 +278,8 @@ headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
 
 #distance_between_measurements = # need to attach to gtfs shapes first
 
-# interpolate busposition points to lines based on headsign and shape ids
-# https://stackoverflow.com/questions/33769860/pandas-apply-but-only-for-rows-where-a-condition-is-met
-# gotta iterate somehow, or use headsign_shapes dataframe as condition in lambda function idk
-#buspositions["geometry_interpolated"] = buspositions.apply(lambda row: row.headsign)
+# %% calcuate speeds
+
 
 # %% some basic summary
 
@@ -287,51 +290,3 @@ logging.info(f"Dataset spans {first_observation} to {last_observation}")
 unique_routes = buspositions.route_number.unique()
 logging.info(f"Number of unique routes: {len(unique_routes)}")
 
-
-# %% calculate speeds
-# associate each point with the nearest dissolved gtfs shape of the same route
-
-# calculate distance covered between measurements
-# probably want to use or consult gtfs_functions' cut_gtfs at some point: https://github.com/Bondify/gtfs_functions/blob/master/gtfs_functions/gtfs_funtions.py
-
-#distance_between_measurements = # need to attach to gtfs shapes first
-## FIRST calculate length of each route (BUT this is complicated bc not every trip goes the same distance along a route...)
-## THEN interpolate from points to points along each line (see here: https://gis.stackexchange.com/questions/306838/snap-points-shapefile-to-line-shapefile-using-shapely)
-## (see also here: https://shapely.readthedocs.io/en/stable/manual.html)
-## THEN can multiply fraction of total route length by total route length to get cumulative distance to each measured vehicle position
-## use that for calculating distance traveled between each measurement
-
-# MAY HAVE TO manually identify corridors where all service patterns are exactly the same
-# OR identify routes with very few different service patterns
-# could at least start by creating different route shapes for inbound and outbound, because that you at least have from the headsign message
-# (though you'd have to know which direction corresponds to inbound and which to outbound in GTFS, which might not be so simple)
-# actually it looks like the headsigns correspond with each service pattern, so may be able to associate shapes with particular headsigns
-# this would be in the route_shapes gdf as you currently have it
-# BUT not sure that the route shape linestrings correspond to different service patterns
-# NO you can use the headsigns from GTFS just have to merge them like you did with the routeids
-# can compare what's in the GTFS trips file with what's returned in buspositions.headsign
-trips_full = pd.read_csv("C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs/trips.txt")
-trips_full["service_id"] = trips_full["service_id"].astype(str)
-service_headsigns = trips_full.groupby(by="trip_headsign")["service_id"].max().reset_index() # assumes each trip headsign is matched to only one service id
-# WAIT WAIT probably you have to merge or join on combination of route id, service id, and direction id
-# NO WAIT what are you trying to get
-# trying to get geometry associated with headsign, so taht you can match the points you get from NJT with a specific route shape
-# in shapes gdf, you alrfeady have shape_id and geometry
-# in the trips GTFS file, you have shape_idf and trip_headsign
-# so the two of those should be enough??
-# number of unique headsigns per route given by
-unique_headsigns = trips_full.groupby(by=["route_id"])["trip_headsign"].unique().apply(len).sort_values(ascending=False)
-trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len).sum() # total
-# number of unique combinations of service id, route id, and direction id given by
-trips_full.groupby(by=["service_id", "route_id", "direction_id"]).size().reset_index().rename(columns={0:"count"})
-trips_full.groupby(by=["route_id", "trip_headsign"]).size() # gives number of trips under each headsign for each route
-trips_full.groupby(by=["route_id", "service_id", "trip_headsign"]).size()  
-# service id doesn't correspond perfectly with headsign. The same headsign will appear under different service ideas for a single route
-# DOESN'T HAVE ANYTING TO DO WITH SERVICE ID, which identifies dates when services are available, come on RTFM: https://developers.google.com/transit/gtfs/reference
-# REMOVE THESE THINGS AND NOTE IN PUSH 
-
-# calendar dates to sort out how service ids are distributed
-pd.crosstab(trips_full.route_id, trips_full.service_id)
-
-#trips = pd.merge(left=trips, right=trips_full[["service_id", "trip_headsign"]], on="service_id", how="left") # add headsign from original GTFS trips file to gdf created by gtfs_functions 
-#trips.join(trips_full[["service_id", "trip_headsign"]], on="service_id", how="inner")
