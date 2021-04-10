@@ -60,8 +60,12 @@ logging.info(f"Logging started at {datetime.datetime.now()}")
 # %% load data and setup dataframe
 logging.info(f"Reading in data from {data_path}")
 # buspositions = pd.read_csv(data_path)
-buspositions = gpd.GeoDataFrame(pd.read_csv(data_path), 
-                      geometry=gpd.points_from_xy(pd.read_csv(data_path).lat, pd.read_csv(data_path).lon))
+buspositions = pd.read_csv(data_path)
+#TODO@14BewleyM make sure the bigger dataset reads in okay (modify path from testdata.csv to testdata_bigger.csv)
+#buspositions = gpd.GeoDataFrame(pd.read_csv(data_path), 
+ #                     geometry=gpd.points_from_xy(pd.read_csv(data_path).lon, pd.read_csv(data_path).lat))
+buspositions = gpd.GeoDataFrame(buspositions, 
+                      geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
 buspositions.crs = {"init": "epsg:4326"}
 print(f"Initial dataset has {buspositions.shape[0]} records")
 
@@ -106,6 +110,14 @@ buspositions["time_elapsed"] = buspositions.sort_values(by=["timestamp", "vehicl
 # testing for negative times
 negative_times = (buspositions.time_elapsed < datetime.timedelta(0)).sum()
 print(f"{negative_times} records calculated with negative elapsed time")
+# create timedelta columns in seconds
+buspositions["time_elapsed_seconds"] = buspositions.time_elapsed.apply(pd.Timedelta.total_seconds)
+export_bus_positions = 1
+if export_bus_positions == 0:
+    # drop timedelta column (bc can only be exported to geopackage as seconds, not as timedelta type)
+    os.chdir(main_directory)
+    buspositions.drop(columns="time_elapsed").to_file("buspositions_cleaned.gpkg", driver="GPKG")
+    os.chdir(code_directory)
 
 # %% load gtfs (including route shapes)
 routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
@@ -264,11 +276,8 @@ len(set(headsign_shapes.shape_id.unique()) - set(shapes_full.shape_id.unique()))
 headsign_shapes = pd.merge(headsign_shapes, shapes_full, on="shape_id")
 headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
 headsign_shapes.crs = {"init": "epsg:4326"}
-# export to geopackage for visual inspection
-# os.chdir(main_directory)
-# headsign_shapes.to_file("headsign_shapes.gpkg", driver="GPKG")
-# os.chdir(code_directory)
-
+# dissolve on headsign
+headsign_shapes_dissolved = headsign_shapes.dissolve(by="trip_headsign").reset_index()
 
 # TODO@14BewleyM Need to make sure there are no headsigns associated with both inbound and outbound direction
 # bc you're relying on that for matching the busposition data to the gtfs shapes
@@ -280,6 +289,33 @@ print(f"Headsigns with both inbound and outbound shapes are: \n {headsign_direct
 # currently, there are 4 routes with headsigns that are associated with both inbound and outbound directions
 # from examining the 29, can at least tell that 0 seems to be inbound and 1 outbound
 # look into how geopandas or shapely or movingpandas would calculate the distance btw two points on a line to see if this would cause problems after you merge shapes
+
+# should be safe to dissolve by headsign and direction id. Different routings in the same direction, if they exist, shouldn't pose as much of a risk of miscalculating distances.
+headsign_shapes_dissolved_bydirection = headsign_shapes.dissolve(by=["trip_headsign", "direction_id"]).reset_index()
+# define some additional dataframes so things don't get way too long
+# first, take the headsigns from the crosstab defined above
+headsigns_two_directions = headsign_direction_crosstab[(headsign_direction_crosstab.direction0!=0) & (headsign_direction_crosstab.direction1!=0)].trip_headsign.unique()
+# then dissolve the shapes associated with those headsigns
+headsigns_two_directions_dissolved = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign.isin(headsigns_two_directions)].dissolve(by="trip_headsign").reset_index()
+# then get the indexes of those shapes
+headsigns_two_directions_index = list(headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign.isin(headsigns_two_directions)].index)
+# use the indexes to delete rows from first headsigns dataframe and replace with dissolved shapes (ie rows where the two-direction headsigns are replaced with single-direction headsigns)
+headsign_shapes_dissolved_bydirection = headsign_shapes_dissolved_bydirection.drop(headsigns_two_directions_index) # drop rows for headsigns that have two directions
+headsign_shapes_dissolved_bydirection = pd.concat([headsign_shapes_dissolved_bydirection, headsigns_two_directions_dissolved]) # add newly dissolved rows for those headsigns back into the dataframe
+# seems to produce the right number of rows
+
+# export to geopackage for visual inspection
+export_maps = 1
+if export_maps == 0:
+    os.chdir(main_directory)
+    headsign_shapes.to_file("headsign_shapes.gpkg", driver="GPKG")
+    headsign_shapes_dissolved.to_file("headsign_shapes_dissolved.gpkg", driver="GPKG")
+    headsign_shapes_dissolved_bydirection.to_file("headsign_shapes_dissolved_bydirection.gpkg", driver="GPKG")
+    os.chdir(code_directory)
+
+
+
+
 
 # now can add shapeid to buspositions dataset (and also geometry)
 # but is that what you need to do to interpolate?
