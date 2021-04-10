@@ -100,7 +100,7 @@ print(f"There are {duplicate_count} observations with duplicate vehicle ids and 
 # drop all except first duplicate for each vehicle
 print(f"Dropping {duplicate_count} duplicates")
 buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["vehicle_id", "geometry"], keep="first")]
-print(f"Final dataset has {buspositions.shape[0]} records")
+print(f"Final dataset has {buspositions.shape[0]} records") # when run all together, this prints a value different from the actual final row count...
 
 # create time elapsed column
 buspositions["month"] = buspositions.timestamp.dt.month
@@ -314,16 +314,16 @@ if export_maps == 0:
     os.chdir(code_directory)
 
 
+# TODO@14BewleyM subset buspositions dataset so that you use only observations from routes in the final headsigns dataframe
 
-
-
-# now can add shapeid to buspositions dataset (and also geometry)
+# now can add shapeid (and also geometry) to buspositions dataset
 # but is that what you need to do to interpolate?
 
 # interpolate busposition points to lines based on headsign and shape ids
 # https://stackoverflow.com/questions/33769860/pandas-apply-but-only-for-rows-where-a-condition-is-met
 # gotta iterate somehow, or use headsign_shapes dataframe as condition in lambda function idk
-#buspositions["geometry_interpolated"] = buspositions.apply(lambda row: row.headsign)
+buspositions["geometry_interpolated"] = buspositions.apply(lambda row: headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.interpolate( headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.project(row.geometry)), axis=1)
+# this way, what happens when there is no matching headsign in the headsigns dataframe? 
 
 #%% calculate distance covered between measurements
 # may want to use or consult gtfs_functions' cut_gtfs at some point: https://github.com/Bondify/gtfs_functions/blob/master/gtfs_functions/gtfs_funtions.py
@@ -332,6 +332,13 @@ if export_maps == 0:
 ## (see also here: https://shapely.readthedocs.io/en/stable/manual.html)
 ## THEN can multiply fraction of total route length by total route length to get cumulative distance to each measured vehicle position
 ## use that for calculating distance traveled between each measurement
+
+## some more links about methods for calculating distance (both from start of shape and between points)
+### from start of shape: https://gis.stackexchange.com/questions/280112/points-layer-distance-from-the-start-of-line-layer-in-qgis
+### between points: https://gis.stackexchange.com/questions/184554/measure-distance-between-points-along-a-line-in-qgis
+### if possible, probably best to measure between points, because merging the route shapes by headsign and direction may still produce strange routings that don't represent routes real-world vehicles take
+
+
 
 #distance_between_measurements = # need to attach to gtfs shapes first
 
