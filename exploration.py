@@ -321,8 +321,26 @@ if export_maps == 0:
 
 # interpolate busposition points to lines based on headsign and shape ids
 # https://stackoverflow.com/questions/33769860/pandas-apply-but-only-for-rows-where-a-condition-is-met
+# using interpolate: https://gis.stackexchange.com/questions/306838/snap-points-shapefile-to-line-shapefile-using-shapely
 # gotta iterate somehow, or use headsign_shapes dataframe as condition in lambda function idk
-buspositions["geometry_interpolated"] = buspositions.apply(lambda row: headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.interpolate( headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.project(row.geometry)), axis=1)
+buspositions["geometry_interpolated"] = buspositions[["headsign", "geometry"]].apply(lambda row: headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.interpolate(headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.project(row.geometry)), axis=1)
+testrow = buspositions.iloc[15]
+testpoint = testrow.geometry
+testline = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign==testrow.headsign].geometry
+testline.interpolate(testline.project(testpoint))
+# all of that works, so it should work when doing apply
+# takes forever, though, so how to do this
+# try to do for loop over the headsigns
+testgdf = gpd.GeoDataFrame(columns=["geometry"])
+for headsign in headsign_shapes_dissolved_bydirection.trip_headsign.unique():
+    line = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == headsign].geometry
+    buspositions[buspositions.headsign == headsign].apply(lambda row: line.interpolate(line.project(row.geometry)), axis=1)
+    # that works and seemingly much quicker
+    # but how to add to dataframe? 
+    # try to concat within testgdf to see what happens
+# could also use buffers, might be quicker, but how big should buffers be?
+# TODO@14BewleyM try to use buffers to 
+
 # this way, what happens when there is no matching headsign in the headsigns dataframe? 
 
 #%% calculate distance covered between measurements
