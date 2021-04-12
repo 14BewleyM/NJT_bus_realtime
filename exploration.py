@@ -322,22 +322,67 @@ if export_maps == 0:
 # interpolate busposition points to lines based on headsign and shape ids
 # https://stackoverflow.com/questions/33769860/pandas-apply-but-only-for-rows-where-a-condition-is-met
 # using interpolate: https://gis.stackexchange.com/questions/306838/snap-points-shapefile-to-line-shapefile-using-shapely
+# also potentially useful: https://medium.com/@brendan_ward/how-to-leverage-geopandas-for-faster-snapping-of-points-to-lines-6113c94e59aa
 # gotta iterate somehow, or use headsign_shapes dataframe as condition in lambda function idk
-buspositions["geometry_interpolated"] = buspositions[["headsign", "geometry"]].apply(lambda row: headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.interpolate(headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.project(row.geometry)), axis=1)
+# buspositions["geometry_interpolated"] = buspositions[["headsign", "geometry"]].apply(lambda row: headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.interpolate(headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.project(row.geometry)), axis=1)
 testrow = buspositions.iloc[15]
 testpoint = testrow.geometry
 testline = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign==testrow.headsign].geometry
-testline.interpolate(testline.project(testpoint))
+newpoint = testline.interpolate(testline.project(testpoint)).geometry
+#buspositions["geometry_interpolated"] = []
+testrow["geometry_interpolated"] = newpoint #.wkt # need to get new geometry as wkt, but can't get wkt from the GeoSeries that interpolate returns
+
+# try to just merge shapes into positions dataset, hoping it isn't too memory intensive
+# bc can't figure out another way atm
+# first, a test on a small number of rows (which seems to work):
+testrows = buspositions[:7]
+testrows_merged = testrows.merge(headsign_shapes_dissolved_bydirection[["geometry", "trip_headsign", "shape_id", "direction_id"]].rename(columns={"trip_headsign": "headsign"}), on="headsign", how="left") # try to merge in the line shapes (had hoped to avoid doing for memory reasons, but may be the simplest way)
+testrows_merged = testrows_merged.rename(columns={"geometry_x": "point_original", "geometry_y": "route_shape"}) # distinguish new geometry columns from each other
+testrows_merged["point_interpolated"] = testrows_merged.apply(lambda row: row.route_shape.interpolate(row.route_shape.project(row.point_original)), axis=1)
+testrows_merged = gpd.GeoDataFrame(testrows_merged.drop(columns=["route_shape"]), geometry="point_interpolated")
+
+testrows_full = buspositions.merge(headsign_shapes_dissolved_bydirection[["geometry", "trip_headsign", "shape_id", "direction_id"]].rename(columns={"trip_headsign": "headsign"}), on="headsign", how="left") # try to merge in the line shapes (had hoped to avoid doing for memory reasons, but may be the simplest way)
+testrows_full = testrows_full.rename(columns={"geometry_x": "point_original", "geometry_y": "route_shape"}) # distinguish new geometry columns from each other
+testrows_full["point_interpolated"] = testrows_full.apply(lambda row: row.route_shape.interpolate(row.route_shape.project(row.point_original)), axis=1)
+# testrows_full = pd.concat([testrows_full, testrows_full.apply(lambda row: pd.Series({"distance_traveled": row.route_shape.project(row.point_original),
+                                                                                     #"point_interpolated": row.route_shape.interpolate(row.route_shape.project(row.point_original))}), axis=1)])
+# this way produces a distance column that you could use to calculate speed, but it may be better to try to calculate segment length between interpolated points
+testrows_full = gpd.GeoDataFrame(testrows_full.drop(columns=["route_shape"]), geometry="point_interpolated")
+
+# https://gis.stackexchange.com/questions/347732/finding-distance-of-consecutive-points-in-a-geopandas-data-frame
+
+# try to do a test loop
+for headsign in headsign_shapes_dissolved_bydirection.trip_headsign.unique():
+    line = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == headsign].geometry
+    #newgeom = testrows.apply(lambda row: line.interpolate(line.project(row.geometry)), axis=1)
+    #testrows[testrows.headsign==headsign] = newgeom
+    testrows.loc[testrows.headsign==headsign]["geometry_interpolated"] = testrows.apply(lambda row: line.interpolate(line.project(row.geometry)), axis=1)
+
+# test with assigning distance_from_start as line.project(row.geometry) 
+
 # all of that works, so it should work when doing apply
 # takes forever, though, so how to do this
 # try to do for loop over the headsigns
-testgdf = gpd.GeoDataFrame(columns=["geometry"])
+testgdf = gpd.GeoDataFrame(columns=["index_old", "geometry", "distance_from_start"])
 for headsign in headsign_shapes_dissolved_bydirection.trip_headsign.unique():
+    #tempgdf = gpd.GeoDataFrame(columns=["index_old", "geometry", "distance_from_start"])
+    #rowlist = []
     line = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == headsign].geometry
-    buspositions[buspositions.headsign == headsign].apply(lambda row: line.interpolate(line.project(row.geometry)), axis=1)
-    # that works and seemingly much quicker
-    # but how to add to dataframe? 
-    # try to concat within testgdf to see what happens
+    buspositions[buspositions.headsign==headsign]["geometry_interpolated"] = buspositions.apply(lambda row: line.interpolate(line.project(row.geometry)), axis=1)
+    # attempt with buffers
+    #buffer = gpd.GeoDataFrame(geometry=line.buffer(45)) # using 45m as buffer distance
+    #points = buspositions[buspositions.headsign == headsign] # should just use geometry column?
+    #tempgdf = gpd.tools.sjoin(points, buffer, how="left")
+#    buspositions[buspositions.headsign == headsign].apply(lambda row: rowlist.append({"index_old": row.index,
+#                                                                                       "geometry": line.project(row.geometry),
+#                                                                                      "distance_from_start": line.project(row.geometry)}), axis=1) #line.interpolate(line.project(row.geometry)), axis=1)
+#    buspositions[buspositions.headsign == headsign].apply(lambda row: print({"index_old": row.index,
+#                                                                                       "geometry": line.project(row.geometry),
+#                                                                                      "distance_from_start": line.project(row.geometry)}), axis=1) #line.interpolate(line.project(row.geometry)), axis=1)                                                                                        
+    #testgdf = testgdf.append(tempgdf)
+    # printing the dicts is very fast
+    # but as soon as you append to various dataframes it takes forever
+    # maybe somewhat faster than just doing the operation on every row using .apply()
 # could also use buffers, might be quicker, but how big should buffers be?
 # TODO@14BewleyM try to use buffers to 
 
@@ -362,6 +407,10 @@ for headsign in headsign_shapes_dissolved_bydirection.trip_headsign.unique():
 
 # %% calcuate speeds
 
+# identify rows with very low speeds
+# (there are some measurements with very large time differences, like several minutes)
+# (some even in the thousands of seconds - those have gotta be buses just sitting, right?)
+# (if you exclude those measurements, you should probably recalculate all the times, right?)
 
 # %% some basic summary
 
