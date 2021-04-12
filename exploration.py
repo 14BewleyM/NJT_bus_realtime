@@ -43,13 +43,16 @@ import re
 # %% some initial settings
 generate_maps = 0
 
-# setting some important directories
+# setting some important directories and filepaths
 main_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper"
 code_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/code"
-
-# %% directories and filepaths
 gtfs_directory = "C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs"
-data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv"
+data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv"
+data_path_smaller = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv"
+data_path_tract = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_blck_grp.csv"
+data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_tract.csv"
+boundary_path_tract = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_tracts.shp"
+boundary_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups.shp"
 
 # %% set up logging
 logging.basicConfig(filename="log.log", 
@@ -59,14 +62,21 @@ logging.info(f"Logging started at {datetime.datetime.now()}")
 
 # %% load data and setup dataframe
 logging.info(f"Reading in data from {data_path}")
-# buspositions = pd.read_csv(data_path)
-buspositions = pd.read_csv(data_path)
+# read in in chunks for big file
+chunk_size = 1.5 *  (10 ** 6) # number of rows to read in at a time (or once, as the case currently is)
+buspositions = pd.DataFrame()
+with pd.read_csv(data_path, chunksize=chunk_size) as reader:
+    for chunk in reader:
+        buspositions = buspositions.append(chunk)
+        break # break after first run
+#buspositions = pd.read_csv(data_path)
 #TODO@14BewleyM make sure the bigger dataset reads in okay (modify path from testdata.csv to testdata_bigger.csv)
 #buspositions = gpd.GeoDataFrame(pd.read_csv(data_path), 
  #                     geometry=gpd.points_from_xy(pd.read_csv(data_path).lon, pd.read_csv(data_path).lat))
 buspositions = gpd.GeoDataFrame(buspositions, 
                       geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
-buspositions.crs = {"init": "epsg:4326"}
+buspositions.crs = "EPSG:4326"
+buspositions = buspositions.to_crs("EPSG:3424")
 print(f"Initial dataset has {buspositions.shape[0]} records")
 
 # set timestamp column to be datetime       
@@ -75,6 +85,7 @@ buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
 # set other data types
 buspositions.vehicle_id = buspositions.vehicle_id.astype(str).str.split(".").str[0]
 buspositions.route_number = buspositions.route_number.astype(str).str.split(".").str[0] 
+buspositions.has_service = buspositions.has_service.map({"t":True, "f":False})
 
 # drop observations for routes that returned no service
 print(f"Dropping {buspositions.shape[0] - buspositions.has_service.sum()} observations from routes with no service")
@@ -275,7 +286,8 @@ len(set(headsign_shapes.shape_id.unique()) - set(shapes_full.shape_id.unique()))
 # merge in geometry
 headsign_shapes = pd.merge(headsign_shapes, shapes_full, on="shape_id")
 headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
-headsign_shapes.crs = {"init": "epsg:4326"}
+headsign_shapes.crs = "EPSG:4326"
+headsign_shapes = headsign_shapes.to_crs("EPSG:3424")
 # dissolve on headsign
 headsign_shapes_dissolved = headsign_shapes.dissolve(by="trip_headsign").reset_index()
 
@@ -316,94 +328,74 @@ if export_maps == 0:
 
 # TODO@14BewleyM subset buspositions dataset so that you use only observations from routes in the final headsigns dataframe
 
-# now can add shapeid (and also geometry) to buspositions dataset
-# but is that what you need to do to interpolate?
 
 # interpolate busposition points to lines based on headsign and shape ids
 # https://stackoverflow.com/questions/33769860/pandas-apply-but-only-for-rows-where-a-condition-is-met
 # using interpolate: https://gis.stackexchange.com/questions/306838/snap-points-shapefile-to-line-shapefile-using-shapely
-# also potentially useful: https://medium.com/@brendan_ward/how-to-leverage-geopandas-for-faster-snapping-of-points-to-lines-6113c94e59aa
-# gotta iterate somehow, or use headsign_shapes dataframe as condition in lambda function idk
-# buspositions["geometry_interpolated"] = buspositions[["headsign", "geometry"]].apply(lambda row: headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.interpolate(headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == row.headsign].geometry.project(row.geometry)), axis=1)
-testrow = buspositions.iloc[15]
-testpoint = testrow.geometry
-testline = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign==testrow.headsign].geometry
-newpoint = testline.interpolate(testline.project(testpoint)).geometry
-#buspositions["geometry_interpolated"] = []
-testrow["geometry_interpolated"] = newpoint #.wkt # need to get new geometry as wkt, but can't get wkt from the GeoSeries that interpolate returns
+buspositions = buspositions.merge(headsign_shapes_dissolved_bydirection[["geometry", "trip_headsign", "shape_id", "direction_id"]].rename(columns={"trip_headsign": "headsign"}), on="headsign", how="left") # try to merge in the line shapes (had hoped to avoid doing for memory reasons, but may be the simplest way)
+buspositions = buspositions.rename(columns={"geometry_x": "point_original", "geometry_y": "route_shape"}) # distinguish new geometry columns from each other
+# the CRS comes undone after the last two operations, so I'm not sure what it uses for the next few, which would seem to require one
+buspositions = gpd.GeoDataFrame(buspositions, crs="EPSG:3424", geometry="point_original")
+#buspositions[["route_shape", "point_original"]] = buspositions[["route_shape", "point_original"]].apply(lambda col: gpd.GeoSeries(col).set_crs("EPSG:3424"))
+buspositions["point_interpolated"] = buspositions.apply(lambda row: row.route_shape.interpolate(row.route_shape.project(row.point_original)), axis=1)
+# geometry columns already projected to ESPG 3424 (NJ state plane with units of ft) for distance calculations: https://www.spatialreference.org/ref/epsg/3424/
+buspositions["distance_traveled_cumul"] = buspositions.apply(lambda row: row.route_shape.project(row.point_interpolated, normalized=False), axis=1) # gotta be a way to do this in one call to .apply(), create a series or something
+# this gives cumulative distance as proportion of the overall route shape
+# need distance in feet (multiply by total route shape length)
+# wait, no, the normalized argument is false by default, so this should be in feet...
+# that the vast majority of measurements are 1 or below makes me think this is normalized, whatever the default arg is supposed to be
+# goddammit, run again with normalized=False explicitly stated
+buspositions = gpd.GeoDataFrame(buspositions.drop(columns=["route_shape"]), geometry="point_interpolated", crs="EPSG:3424")
 
-# try to just merge shapes into positions dataset, hoping it isn't too memory intensive
-# bc can't figure out another way atm
-# first, a test on a small number of rows (which seems to work):
-testrows = buspositions[:7]
-testrows_merged = testrows.merge(headsign_shapes_dissolved_bydirection[["geometry", "trip_headsign", "shape_id", "direction_id"]].rename(columns={"trip_headsign": "headsign"}), on="headsign", how="left") # try to merge in the line shapes (had hoped to avoid doing for memory reasons, but may be the simplest way)
-testrows_merged = testrows_merged.rename(columns={"geometry_x": "point_original", "geometry_y": "route_shape"}) # distinguish new geometry columns from each other
-testrows_merged["point_interpolated"] = testrows_merged.apply(lambda row: row.route_shape.interpolate(row.route_shape.project(row.point_original)), axis=1)
-testrows_merged = gpd.GeoDataFrame(testrows_merged.drop(columns=["route_shape"]), geometry="point_interpolated")
-
-testrows_full = buspositions.merge(headsign_shapes_dissolved_bydirection[["geometry", "trip_headsign", "shape_id", "direction_id"]].rename(columns={"trip_headsign": "headsign"}), on="headsign", how="left") # try to merge in the line shapes (had hoped to avoid doing for memory reasons, but may be the simplest way)
-testrows_full = testrows_full.rename(columns={"geometry_x": "point_original", "geometry_y": "route_shape"}) # distinguish new geometry columns from each other
-testrows_full["point_interpolated"] = testrows_full.apply(lambda row: row.route_shape.interpolate(row.route_shape.project(row.point_original)), axis=1)
-# testrows_full = pd.concat([testrows_full, testrows_full.apply(lambda row: pd.Series({"distance_traveled": row.route_shape.project(row.point_original),
-                                                                                     #"point_interpolated": row.route_shape.interpolate(row.route_shape.project(row.point_original))}), axis=1)])
-# this way produces a distance column that you could use to calculate speed, but it may be better to try to calculate segment length between interpolated points
-testrows_full = gpd.GeoDataFrame(testrows_full.drop(columns=["route_shape"]), geometry="point_interpolated")
-
-# https://gis.stackexchange.com/questions/347732/finding-distance-of-consecutive-points-in-a-geopandas-data-frame
-
-# try to do a test loop
-for headsign in headsign_shapes_dissolved_bydirection.trip_headsign.unique():
-    line = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == headsign].geometry
-    #newgeom = testrows.apply(lambda row: line.interpolate(line.project(row.geometry)), axis=1)
-    #testrows[testrows.headsign==headsign] = newgeom
-    testrows.loc[testrows.headsign==headsign]["geometry_interpolated"] = testrows.apply(lambda row: line.interpolate(line.project(row.geometry)), axis=1)
-
-# test with assigning distance_from_start as line.project(row.geometry) 
-
-# all of that works, so it should work when doing apply
-# takes forever, though, so how to do this
-# try to do for loop over the headsigns
-testgdf = gpd.GeoDataFrame(columns=["index_old", "geometry", "distance_from_start"])
-for headsign in headsign_shapes_dissolved_bydirection.trip_headsign.unique():
-    #tempgdf = gpd.GeoDataFrame(columns=["index_old", "geometry", "distance_from_start"])
-    #rowlist = []
-    line = headsign_shapes_dissolved_bydirection[headsign_shapes_dissolved_bydirection.trip_headsign == headsign].geometry
-    buspositions[buspositions.headsign==headsign]["geometry_interpolated"] = buspositions.apply(lambda row: line.interpolate(line.project(row.geometry)), axis=1)
-    # attempt with buffers
-    #buffer = gpd.GeoDataFrame(geometry=line.buffer(45)) # using 45m as buffer distance
-    #points = buspositions[buspositions.headsign == headsign] # should just use geometry column?
-    #tempgdf = gpd.tools.sjoin(points, buffer, how="left")
-#    buspositions[buspositions.headsign == headsign].apply(lambda row: rowlist.append({"index_old": row.index,
-#                                                                                       "geometry": line.project(row.geometry),
-#                                                                                      "distance_from_start": line.project(row.geometry)}), axis=1) #line.interpolate(line.project(row.geometry)), axis=1)
-#    buspositions[buspositions.headsign == headsign].apply(lambda row: print({"index_old": row.index,
-#                                                                                       "geometry": line.project(row.geometry),
-#                                                                                      "distance_from_start": line.project(row.geometry)}), axis=1) #line.interpolate(line.project(row.geometry)), axis=1)                                                                                        
-    #testgdf = testgdf.append(tempgdf)
-    # printing the dicts is very fast
-    # but as soon as you append to various dataframes it takes forever
-    # maybe somewhat faster than just doing the operation on every row using .apply()
-# could also use buffers, might be quicker, but how big should buffers be?
-# TODO@14BewleyM try to use buffers to 
-
-# this way, what happens when there is no matching headsign in the headsigns dataframe? 
 
 #%% calculate distance covered between measurements
 # may want to use or consult gtfs_functions' cut_gtfs at some point: https://github.com/Bondify/gtfs_functions/blob/master/gtfs_functions/gtfs_funtions.py
-## FIRST calculate length of each route (BUT this is complicated bc not every trip goes the same distance along a route...)
-## THEN interpolate from points to points along each line (see here: https://gis.stackexchange.com/questions/306838/snap-points-shapefile-to-line-shapefile-using-shapely)
-## (see also here: https://shapely.readthedocs.io/en/stable/manual.html)
-## THEN can multiply fraction of total route length by total route length to get cumulative distance to each measured vehicle position
-## use that for calculating distance traveled between each measurement
+# shift within each vehicle number (and run number, in case a vehicle goes out of service and then reappears a long time or distance later?)
+# link: https://gis.stackexchange.com/questions/347732/finding-distance-of-consecutive-points-in-a-geopandas-data-frame
 
 ## some more links about methods for calculating distance (both from start of shape and between points)
 ### from start of shape: https://gis.stackexchange.com/questions/280112/points-layer-distance-from-the-start-of-line-layer-in-qgis
 ### between points: https://gis.stackexchange.com/questions/184554/measure-distance-between-points-along-a-line-in-qgis
 ### if possible, probably best to measure between points, because merging the route shapes by headsign and direction may still produce strange routings that don't represent routes real-world vehicles take
 
+# %% analyze vehicle and run numbers see if vehicles typically go in and out of service in a way that leaves long time or distance gaps
 
+# vehicles with the most observations
+buspositions.groupby(by="vehicle_id").size().sort_values()
+buspositions[buspositions.vehicle_id=="5946"].sort_values(by="timestamp", ascending=True)
+# how many run on more than one route? few
+number_vehicles_total = len(buspositions.vehicle_id.unique())
+vehicles_byroute_summed_desc = buspositions.groupby(by="vehicle_id").route_number.unique().apply(len).describe()
+vehicles_multiple_routes = buspositions.groupby(by="vehicle_id").route_number.unique().apply(len) > 1
+print(f"There are {number_vehicles_total} distinct vehicle ids")
+print(f"{vehicles_multiple_routes.sum()} vehicles are associated with >1 route")
+vehicles_byrun_summed_desc = buspositions.groupby(by="vehicle_id").run_number.unique().apply(len).describe()
+vehicles_multiple_runs = buspositions.groupby(by="vehicle_id").run_number.unique().apply(len) > 1
+print(f"{vehicles_multiple_runs.sum()} vehicles are associated with >1 run")
+print(f"{(vehicles_multiple_runs & vehicles_multiple_routes).sum()} vehicles are associated with >1 route and >1 run")
+print(f"{(~vehicles_multiple_runs & ~vehicles_multiple_routes).sum()} vehicles are associated with only 1 route and only 1 run")
 
-#distance_between_measurements = # need to attach to gtfs shapes first
+# basically, it's safe to say there are a significant number of vehicles that do multiple runs
+# so should at least group by vehicle id and run number
+# but should also group by headsign, bc there are sometimes gaps in time or distance where the run number doesn't change but the headsign does
+# (eg vehicle 5946 on route 1 with run number 653 changes headsign but not run number btw observations 958877 and 983363, with a gap of about 16 minutes)
+# this will exclude some relevant observations (bc you won't be able to calculate differences and speeds for some rows that become the first in a group)
+# but that's better than having some observations that would be useful but have to be discarded bc of very high speeds, and not in a sensible way
+
+buses_sorted_grouped = buspositions.sort_values(by="timestamp").groupby(by=["month", "day", "vehicle_id", "headsign", "run_number"])
+# reproject into ESPG 3424 (NJ state plane with units of ft) for distance calculations: https://www.spatialreference.org/ref/epsg/3424/
+
+# get distance along line of each observation in group (using .project())
+
+# get difference between distance associated with each observation and its previous observation (.diff() on the relevant column should be enough)
+buspositions["distance_traveled_prev"] = buses_sorted_grouped.distance_traveled_cumul.diff()
+# calculate speed values in mph
+buspositions["speed"] = (buspositions.distance_traveled_prev/5280) / (buspositions.time_elapsed_seconds/ (60 *60))
+# passes smell test, but there are some absurd values
+
+# calculate max distance traveled and time taken by a vehicle for each headsign and run combination
+# subtract first observation (or timestamp.min()) from last observation (or timestamp.max()) within each group
+# but where to assign this? this may be more an analysis than a data processing step
 
 # %% calcuate speeds
 
@@ -420,4 +412,24 @@ logging.info(f"Dataset spans {first_observation} to {last_observation}")
 
 unique_routes = buspositions.route_number.unique()
 logging.info(f"Number of unique routes: {len(unique_routes)}")
+
+
+# %% calculate equity measures
+
+# relevant codes from ACS 2015-2019:
+# GISJOIN: gis join match code
+# TRACTA: tract code
+# BLKGRPA: block group code
+# ALUBE001: total population
+# ALUCE003: (race) black alone
+# ALUCE005: (race) Asian alone
+# ALUKE003: (ethnicity) non-Hispanic white population <- use for constructing "POC" category by subtracting from or dividing by pop
+# ALWYE001: total households for which poverty status determined (denominator for poverty % calculation)
+# ALWYE002: households with incomes below poverty level (numerator for poverty % calculation)
+# codes for variables are the same are the same for tracts and block groups
+
+#acs_tract = pd.read_csv(data_path_tract)
+acs_blockgroup = pd.read_csv(data_path_blockgroup)
+#tracts = gpd.read_file(boundary_path_tract)
+blockgrouops = gpd.read_file(boundary_path_blockgroup)
 
