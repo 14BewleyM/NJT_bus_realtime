@@ -471,7 +471,15 @@ acs_blockgroup = pd.read_csv(data_path_blockgroup)
 #tracts = gpd.read_file(boundary_path_tract)
 blockgroups = gpd.read_file(boundary_path_blockgroup)
 
-blockgroups
+blockgroups = blockgroups.merge(acs_blockgroup, on="GISJOIN")
 
-blockgroups.crs = "EPSG:5070" # USA_Contiguous_Albers_Equal_Area_Conic
-blockgroups = blockgroups.to_crs("EPSG:3424")
+blockgroups.crs = "EPSG:5070" # USA_Contiguous_Albers_Equal_Area_Conic, suitable for buffering bc of equal area
+# blockgroups = blockgroups.to_crs("EPSG:3424")
+
+# create buffer around route shapes
+buffer = headsign_shapes_dissolved_bydirection
+# or use headsign_shapes_dissolved? 
+
+# join block groups that intersect the route shape buffers
+
+# average 
