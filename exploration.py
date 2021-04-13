@@ -453,6 +453,10 @@ logging.info(f"Number of unique routes: {len(unique_routes)}")
 
 # %% calculate equity measures
 
+# see for some examples:
+# Boston, p 11: https://d3n8a8pro7vhmx.cloudfront.net/livablestreetsalliance/pages/6582/attachments/original/1569205099/lsa-better-buses-2019-v9-20sep19.pdf?1569205099
+
+
 # relevant codes from ACS 2015-2019:
 # GISJOIN: gis join match code
 # TRACTA: tract code
@@ -470,15 +474,20 @@ acs_blockgroup = pd.read_csv(data_path_blockgroup)
 #tracts = gpd.read_file(boundary_path_tract)
 blockgroups = gpd.read_file(boundary_path_blockgroup)
 
-blockgroups = blockgroups.merge(acs_blockgroup, on="GISJOIN")
+acs_blockgroup.GISJOIN = acs_blockgroup.GISJOIN.astype(str)
+blockgroups.GISJOIN = blockgroups.GISJOIN.astype(str)
+blockgroups_merged = blockgroups.merge(acs_blockgroup, on="GISJOIN", how="inner")
+# for some reason returns empty dataframe, think it may have something to do with mixing geodataframe and dataframe, idk
 
-blockgroups.crs = "EPSG:5070" # USA_Contiguous_Albers_Equal_Area_Conic, suitable for buffering bc of equal area
+
+# projection is USA_Contiguous_Albers_Equal_Area_Conic, suitable for buffering bc of equal area
 # blockgroups = blockgroups.to_crs("EPSG:3424")
 
 # create buffer around route shapes
-buffer = headsign_shapes_dissolved_bydirection
-# or use headsign_shapes_dissolved? 
-
+buffersize = 402.336 # 1/4 mile in meters
+buffer = headsign_shapes_dissolved_bydirection.geometry.buffer(buffersize)
+headsign_shapes_dissolved_bydirection["buffer"] = buffer
 # join block groups that intersect the route shape buffers
+#blockgroups_joined = headsign_shapes_dissolved_bydirection.sjoin(blockgroups)
 
 # average 
