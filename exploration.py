@@ -132,7 +132,7 @@ if export_bus_positions == 0:
 
 # %% load gtfs (including route shapes)
 routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
-segments_gdf = gtfs.cut_gtfs(stop_times, stops, shapes)
+# segments_gdf = gtfs.cut_gtfs(stop_times, stops, shapes)
 
 # trying to determine whether there are different route shapes for each route
 trips.groupby(trips.route_id).shape_id.unique()
@@ -436,9 +436,8 @@ print(f"Resulting dataset has {buspositions.shape[0]} records")
 avg_speeds_by_route = buspositions.groupby(by="route_number").speed.mean().reset_index()
 avg_speeds_by_route.to_csv("avg_speeds_byroute.csv")
 # add scheduled speeds (calculated using gtfs_functions' .speed_from_gtfs())
-speeds = gtfs.speeds_from_gtfs(routes, stop_times, segments_gdf)
-avg_speeds_by_route["scheduled_speed_avg"] = speeds[speeds.route.isin(matched_route_numbers)].groupby(by="route").speed_mph.mean()
-#buspositions.route_number.isin(matched_route_numbers)
+# speeds = gtfs.speeds_from_gtfs(routes, stop_times, segments_gdf)
+# avg_speeds_by_route["scheduled_speed_avg"] = speeds[speeds.route.isin(matched_route_numbers)].groupby(by="route").speed_mph.mean()
 # you can also specify windows of time as a list of breakpoints and pass it to .speeds_from_gtfs() as an arg "cutoffs"
 
 # %% some basic summary
