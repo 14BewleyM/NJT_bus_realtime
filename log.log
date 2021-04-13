@@ -117,3 +117,14 @@ INFO:root:Logging started at 2021-04-12 03:47:08.617372
 INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv
 INFO:root:Dataset spans 2021-03-29 06:00:09.693000 to 2021-04-04 10:26:33.240000
 INFO:root:Number of unique routes: 46
+INFO:root:Logging started at 2021-04-12 16:49:08.646049
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv
+INFO:root:Dataset spans 2021-03-29 06:00:09.693000 to 2021-04-04 10:26:33.240000
+INFO:root:Number of unique routes: 46
+ERROR:fiona._env:C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups.shp: No such file or directory
+INFO:root:Logging started at 2021-04-12 21:09:01.638193
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv
+INFO:root:Logging started at 2021-04-12 21:09:25.817730
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv
+INFO:root:Logging started at 2021-04-13 01:00:13.840163
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv

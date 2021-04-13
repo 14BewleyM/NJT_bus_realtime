@@ -51,8 +51,8 @@ data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_s
 data_path_smaller = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv"
 data_path_tract = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_blck_grp.csv"
 data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_tract.csv"
-boundary_path_tract = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_tracts.shp"
-boundary_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups.shp"
+boundary_path_tract = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_tracts/US_tract_2019.shp"
+boundary_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups/NJ_blck_grp_2019.shp"
 
 # %% set up logging
 logging.basicConfig(filename="log.log", 
@@ -132,6 +132,7 @@ if export_bus_positions == 0:
 
 # %% load gtfs (including route shapes)
 routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
+segments_gdf = gtfs.cut_gtfs(stop_times, stops, shapes)
 
 # trying to determine whether there are different route shapes for each route
 trips.groupby(trips.route_id).shape_id.unique()
@@ -253,7 +254,9 @@ matched_route_numbers = matching_headsigns.route_short_name.unique()
 # because the matchup allows bus position measurements to be matched with gtfs route shapes
 
 # %% match gtfs route shapes to headsigns and then to bus position measurements
+print(f"Dropping {buspositions.route_number.isin(matched_route_numbers).sum()} observations from buspositions whose headsigns don't exactly match a GTFS headsign")
 buspositions = buspositions[buspositions.route_number.isin(matched_route_numbers)]
+print(f"Dataset has {buspositions.shape[0]} records remaining after dropping")
 headsign_shapes = trips_full[trips_full.route_short_name.isin(matched_route_numbers)][["route_short_name", "trip_headsign", "direction_id", "shape_id"]]
 headsign_shapes = headsign_shapes.drop_duplicates()
 # edit headsigns in new dataframes to match buspositions format, using pattern from above
@@ -389,6 +392,9 @@ buses_sorted_grouped = buspositions.sort_values(by="timestamp").groupby(by=["mon
 
 # get difference between distance associated with each observation and its previous observation (.diff() on the relevant column should be enough)
 buspositions["distance_traveled_prev"] = buses_sorted_grouped.distance_traveled_cumul.diff()
+
+
+# %% calcuate speeds
 # calculate speed values in mph
 buspositions["speed"] = (buspositions.distance_traveled_prev/5280) / (buspositions.time_elapsed_seconds/ (60 *60))
 # passes smell test, but there are some absurd values
@@ -397,12 +403,43 @@ buspositions["speed"] = (buspositions.distance_traveled_prev/5280) / (buspositio
 # subtract first observation (or timestamp.min()) from last observation (or timestamp.max()) within each group
 # but where to assign this? this may be more an analysis than a data processing step
 
-# %% calcuate speeds
-
 # identify rows with very low speeds
 # (there are some measurements with very large time differences, like several minutes)
 # (some even in the thousands of seconds - those have gotta be buses just sitting, right?)
 # (if you exclude those measurements, you should probably recalculate all the times, right?)
+
+# how many observations have negative speeds? by route
+neg_speeds_byroute = buspositions[buspositions.speed < 0].groupby(by="route_number").size().reset_index().rename(columns={0: "neg_speeds_count"}) 
+neg_speeds_byroute["total_obs_count"] = buspositions.groupby(by="route_number").size().reset_index()[0]
+neg_speeds_byroute["neg_speed_pct"] = neg_speeds_byroute.neg_speeds_count / neg_speeds_byroute.total_obs_count
+neg_speeds_byroute.sort_values(by="neg_speed_pct", ascending=False)
+print(f"There are {(buspositions.speed < 0).sum()} observations with negative speeds, out of {buspositions.shape[0]} total observations")
+print(f"There are {buspositions.speed.isna().sum()} observations with null speeds, out of {buspositions.shape[0]} total observations")
+print(f"These represent {((((buspositions.speed < 0).sum() + buspositions.speed.isna().sum())/buspositions.shape[0]) * 100):.{3}}% of all observations")
+# the negative speeds are all due to negative distance measures
+(buspositions.time_elapsed_seconds < 0).sum()
+(buspositions.distance_traveled_prev < 0).sum()
+# this makes me think the negative speeds are legit
+# and just the result of the shapes being incorrectly oriented 
+buspositions[buspositions.speed < -60] #~2400 observations with speeds less than 60mph
+
+# for now, just exclude the observations that are null or have speeds less than -60mph (judging those to be reasonable measurements)
+# and convert remaining negative speeds to positive
+# you'll exclude nulls in any case bc those should be the first observation within each group
+print(f"Dropping observations with null speed or with negative speeds less than -60mph: {buspositions[(buspositions.speed < -60) | (buspositions.speed.isna())].shape[0]} observations")
+buspositions = buspositions[(buspositions.speed >= -60) & (~buspositions.speed.isna())]
+print(f"Converting {buspositions[buspositions.speed < 0].shape[0]} remaining negative speed observations")
+buspositions.loc[(buspositions.speed < 0), "speed"] = buspositions.speed * -1
+print(f"Resulting dataset has {buspositions.shape[0]} records")
+
+# average speeds by route
+avg_speeds_by_route = buspositions.groupby(by="route_number").speed.mean().reset_index()
+avg_speeds_by_route.to_csv("avg_speeds_byroute.csv")
+# add scheduled speeds (calculated using gtfs_functions' .speed_from_gtfs())
+speeds = gtfs.speeds_from_gtfs(routes, stop_times, segments_gdf)
+avg_speeds_by_route["scheduled_speed_avg"] = speeds[speeds.route.isin(matched_route_numbers)].groupby(by="route").speed_mph.mean()
+#buspositions.route_number.isin(matched_route_numbers)
+# you can also specify windows of time as a list of breakpoints and pass it to .speeds_from_gtfs() as an arg "cutoffs"
 
 # %% some basic summary
 
@@ -412,6 +449,7 @@ logging.info(f"Dataset spans {first_observation} to {last_observation}")
 
 unique_routes = buspositions.route_number.unique()
 logging.info(f"Number of unique routes: {len(unique_routes)}")
+
 
 
 # %% calculate equity measures
@@ -431,5 +469,9 @@ logging.info(f"Number of unique routes: {len(unique_routes)}")
 #acs_tract = pd.read_csv(data_path_tract)
 acs_blockgroup = pd.read_csv(data_path_blockgroup)
 #tracts = gpd.read_file(boundary_path_tract)
-blockgrouops = gpd.read_file(boundary_path_blockgroup)
+blockgroups = gpd.read_file(boundary_path_blockgroup)
 
+blockgroups
+
+blockgroups.crs = "EPSG:5070" # USA_Contiguous_Albers_Equal_Area_Conic
+blockgroups = blockgroups.to_crs("EPSG:3424")
