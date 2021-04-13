@@ -49,8 +49,8 @@ code_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2
 gtfs_directory = "C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs"
 data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv"
 data_path_smaller = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv"
-data_path_tract = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_blck_grp.csv"
-data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_tract.csv"
+data_path_tract = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_tract.csv"
+data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_blck_grp.csv"
 boundary_path_tract = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_tracts/US_tract_2019.shp"
 boundary_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups/NJ_blck_grp_2019.shp"
 
@@ -450,6 +450,34 @@ unique_routes = buspositions.route_number.unique()
 logging.info(f"Number of unique routes: {len(unique_routes)}")
 
 
+# %% setting up Census data
+
+#acs_tract = pd.read_csv(data_path_tract)
+acs_blockgroups = pd.read_csv(data_path_blockgroup)
+old_cols = list(acs_blockgroups.columns)
+new_cols = [new_col.lower() for new_col in old_cols] 
+acs_blockgroups = acs_blockgroups.rename(columns={old_cols[i]: new_cols[i] for i in range(len(old_cols))})
+#tracts = gpd.read_file(boundary_path_tract)
+blockgroups = gpd.read_file(boundary_path_blockgroup)
+old_cols = list(blockgroups.columns)
+new_cols = [new_col.lower() for new_col in old_cols] 
+blockgroups = blockgroups.rename(columns={old_cols[i]: new_cols[i] for i in range(len(old_cols))})
+# prefer them lowercase
+
+blockgroups_merged = blockgroups.merge(acs_blockgroups, on="gisjoin")
+# for some reason returns empty dataframe, think it may have something to do with mixing geodataframe and dataframe, idk
+
+
+# projection is USA_Contiguous_Albers_Equal_Area_Conic (EPSG 102003 or 5070), suitable for buffering bc of equal area
+# blockgroups = blockgroups.to_crs("EPSG:3424")
+
+# create buffer around route shapes
+buffersize = 402.336 # 1/4 mile in meters
+buffer = headsign_shapes_dissolved_bydirection.geometry.buffer(buffersize)
+headsign_shapes_dissolved_bydirection["buffer"] = buffer
+
+# join block groups that intersect the route shape buffers
+blockgroups_headsigns_joined = gpd.sjoin(headsign_shapes_dissolved_bydirection.set_geometry("buffer").to_crs("EPSG:5070"), blockgroups_merged.to_crs("EPSG:5070"), op="intersects", how="left")
 
 # %% calculate equity measures
 
@@ -462,32 +490,26 @@ logging.info(f"Number of unique routes: {len(unique_routes)}")
 # TRACTA: tract code
 # BLKGRPA: block group code
 # ALUBE001: total population
+# ALUCE001: total pop for race table
 # ALUCE003: (race) black alone
 # ALUCE005: (race) Asian alone
+# ALUKE001: total pop for ethnicity table
 # ALUKE003: (ethnicity) non-Hispanic white population <- use for constructing "POC" category by subtracting from or dividing by pop
+# ALUKE012: (ethnicity) Hispanic or Latino (all races)
 # ALWYE001: total households for which poverty status determined (denominator for poverty % calculation)
 # ALWYE002: households with incomes below poverty level (numerator for poverty % calculation)
 # codes for variables are the same are the same for tracts and block groups
 
-#acs_tract = pd.read_csv(data_path_tract)
-acs_blockgroup = pd.read_csv(data_path_blockgroup)
-#tracts = gpd.read_file(boundary_path_tract)
-blockgroups = gpd.read_file(boundary_path_blockgroup)
+# create new columns for values of interest
+blockgroups_headsigns_joined["prop_poc"] = (blockgroups_headsigns_joined.aluke001 - blockgroups_headsigns_joined.aluke003) / blockgroups_headsigns_joined.aluke001
+blockgroups_headsigns_joined["prop_white"] = blockgroups_headsigns_joined.aluke003 / blockgroups_headsigns_joined.aluke001
+blockgroups_headsigns_joined["prop_latino_allraces"] = blockgroups_headsigns_joined.aluke012 / blockgroups_headsigns_joined.aluke001
+blockgroups_headsigns_joined["prop_black"] = blockgroups_headsigns_joined.aluce003 / blockgroups_headsigns_joined.aluce001
+blockgroups_headsigns_joined["prop_asian"] = blockgroups_headsigns_joined.aluce005 / blockgroups_headsigns_joined.aluce001
+blockgroups_headsigns_joined["prop_poverty"] = blockgroups_headsigns_joined.alwye002 / blockgroups_headsigns_joined.alwye001
 
-acs_blockgroup.GISJOIN = acs_blockgroup.GISJOIN.astype(str)
-blockgroups.GISJOIN = blockgroups.GISJOIN.astype(str)
-blockgroups_merged = blockgroups.merge(acs_blockgroup, on="GISJOIN", how="inner")
-# for some reason returns empty dataframe, think it may have something to do with mixing geodataframe and dataframe, idk
+# service area averages for each of the measures
+service_area_averages = blockgroups_headsigns_joined[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].mean().reset_index().rename(columns={"index": "measure", 0: "proportion"})
 
 
-# projection is USA_Contiguous_Albers_Equal_Area_Conic, suitable for buffering bc of equal area
-# blockgroups = blockgroups.to_crs("EPSG:3424")
 
-# create buffer around route shapes
-buffersize = 402.336 # 1/4 mile in meters
-buffer = headsign_shapes_dissolved_bydirection.geometry.buffer(buffersize)
-headsign_shapes_dissolved_bydirection["buffer"] = buffer
-# join block groups that intersect the route shape buffers
-#blockgroups_joined = headsign_shapes_dissolved_bydirection.sjoin(blockgroups)
-
-# average 
