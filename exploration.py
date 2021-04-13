@@ -469,22 +469,12 @@ blockgroups_merged = blockgroups.merge(acs_blockgroups, on="gisjoin")
 
 # projection is USA_Contiguous_Albers_Equal_Area_Conic (EPSG 102003 or 5070), suitable for buffering bc of equal area
 
-# create headsign, route, and service area shapes for spatial join with Census data
-# need separate dataframes for headsigns, routes, and entire service area so that you don't double count when coming up with equity measures
+# create headsign shapes for spatial join with Census data
 # declare buffer size 
 buffersize = 402.336 # 1/4 mile in meters
 # create headsign shapes with bufffer 
 buffer = headsign_shapes_dissolved_bydirection.to_crs("EPSG:5070").geometry.buffer(buffersize)
 headsign_shapes_dissolved_bydirection["buffer"] = buffer
-# do the same for route shapes (ie all headsigns dissolved by route)
-headsign_shapes_dissolved_byroute = headsign_shapes_dissolved_bydirection.dissolve(by="route_short_name").reset_index()
-buffer = headsign_shapes_dissolved_byroute.to_crs("EPSG:5070").geometry.buffer(buffersize)
-headsign_shapes_dissolved_byroute["buffer"] = buffer
-# do the same for the whole service area (ie all routes dissolved together)
-headsign_shapes_dissolved_byroute["service_area_dissolved"] = 1
-service_area_shape = headsign_shapes_dissolved_byroute.dissolve(by="service_area_dissolved")
-buffer = service_area_shape.to_crs("EPSG:5070").geometry.buffer(buffersize) # this takes very long, but not sure if would be faster to dissolve the buffer or create it anew like this every time 
-service_area_shape["buffer"] = buffer
 
 # join block groups that intersect the headsign shape buffers
 blockgroups_headsigns_joined = gpd.sjoin(headsign_shapes_dissolved_bydirection.set_geometry("buffer").to_crs("EPSG:5070"), blockgroups_merged.to_crs("EPSG:5070"), op="intersects", how="left")
@@ -521,17 +511,18 @@ for df in [blockgroups_headsigns_joined, acs_blockgroups]:
 
 # define new dataframes for each route and for the whole service area, to avoid double-counting
 # for each route (dropping block groups that are associated more than once with a route)
-
-# for the whole service area (dropping all duplicated block groups)
+blockgroups_routes_joined = blockgroups_headsigns_joined.drop_duplicates(["route_short_name", "gisjoin"])
+# for the whole service area (dropping all duplicated block groups, using gisjoin field as unique id for tracts)
+blockgroups_servicearea_joined = blockgroups_headsigns_joined.drop_duplicates(["gisjoin"])
 
 # service area averages for each of the measures
 # index is each of the values, access by eg service_area_distribution.prop_poc.loc["mean"]
-service_area_distribution = blockgroups_headsigns_joined[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].describe()
+service_area_distribution = blockgroups_servicearea_joined[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].describe()
 # add statewide mean for each of the variables
 service_area_distribution.loc["state_mean"] = acs_blockgroups[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].mean()
 # POC proportion is higher than the ~0.44 reported in 2017 Title VI report for the service area
 # maybe your 1/4 mile buffer is narrower than the one they use
 
 # calculating measures for the whole service area and for each route
-blockgroups_headsigns_joined.drop_duplicates(["route_short_name", "gisjoin"]).groupby(by="route_short_name").prop_poc.mean()
+
 
