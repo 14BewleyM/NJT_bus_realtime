@@ -68,10 +68,47 @@ buspositions = pd.DataFrame()
 with pd.read_csv(data_path, chunksize=chunk_size) as reader:
     iterator = 0
     for chunk in reader:
-        print(f"Reading in chunk {iterator} with chunk size of {chunk_size} max rows")
+        print(f"Chunk {iterator}: Reading in chunk {iterator} with chunk size of {chunk_size} max rows")
         buspositions = buspositions.append(chunk)
+        print(f"Chunk {iterator}: Dataframe has {buspositions.shape[0]} rows")
+        buspositions = gpd.GeoDataFrame(buspositions, 
+                            geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
+        buspositions.crs = "EPSG:4326"
+
+        # set timestamp column to be datetime and add day and month columns   
+        buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
+        buspositions["month"] = buspositions.timestamp.dt.month
+        buspositions["day"] = buspositions.timestamp.dt.day
+
+        # set other data types
+        buspositions.vehicle_id = buspositions.vehicle_id.astype(str).str.split(".").str[0]
+        buspositions.route_number = buspositions.route_number.astype(str).str.split(".").str[0] 
+        buspositions.has_service = buspositions.has_service.map({"t":True, "f":False})
+
+        # drop observations for routes that returned no service
+        print(f"Chunk {iterator}: Dropping {buspositions.shape[0] - buspositions.has_service.sum()} observations from routes with no service")
+        buspositions = buspositions[buspositions.has_service==True]
+
+        # some headsigns had ampersand replaced with &amp;amp;
+        # put ampersand back
+        buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
+
+        # check for duplicates by month, day, run number, vehicle id, and geometry
+        # records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
+        duplicate_count = buspositions.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
+        print(f"Chunk {iterator}: There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
+
+        # drop all except first duplicate for each vehicle
+        print(f"Chunk {iterator}: Dropping {duplicate_count} duplicates")
+        buspositions = buspositions.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
+        print(f"Chunk {iterator}: Dataset has {buspositions.shape[0]} records after dropping") # when run all together, this prints a value different from the actual final row count...
+
         # break # heylisten break after first run
         iterator += 1
+        #if iterator == 100:
+         #   break # set to break after about 17 mill rows
+            # can try to dedupe as you go in future to reduce overall size
+        # it'll append a bunch of rows (up to ~17 mill) but just hang even if you reduce the size
 #buspositions = pd.read_csv(data_path)
 #TODO@14BewleyM make sure the bigger dataset reads in okay (modify path from testdata.csv to testdata_bigger.csv)
 #buspositions = gpd.GeoDataFrame(pd.read_csv(data_path), 
@@ -100,7 +137,7 @@ buspositions = buspositions[buspositions.has_service==True]
 # put ampersand back
 buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
 
-# check for duplicate coordinates in reduced dataframe, to get a sense of the potential problem
+# check for duplicate coordinates in reduced dataframe
 # mark the first duplicate, assuming that every duplicate afterwards erroneously suggests vehicle isn't moving
 duplicate_count = buspositions.duplicated(subset="geometry", keep="first").sum()
 print(f"There are {duplicate_count} observations with duplicate geometries")
@@ -114,13 +151,11 @@ print(f"There are {duplicate_count} observations with duplicate vehicle ids and 
 duplicate_count = buspositions.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
 print(f"There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
 
-# dataframe for examining all duplicates next to each other
-#buspositions[buspositions.duplicated(subset=["vehicle_id", "geometry"], keep=False)].sort_values(by=["vehicle_id", "lat", "timestamp"])
-
 # drop all except first duplicate for each vehicle
 print(f"Dropping {duplicate_count} duplicates")
-buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")]
-print(f"Final dataset has {buspositions.shape[0]} records") # when run all together, this prints a value different from the actual final row count...
+#buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")]
+buspositions = buspositions.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
+print(f"Final dataset has {buspositions.shape[0]} records")
 
 # create time elapsed column
 print(f"Creating elapsed time column")
