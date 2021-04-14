@@ -500,14 +500,49 @@ blockgroups_headsigns_joined = gpd.sjoin(headsign_shapes_dissolved_bydirection.s
 # ALWYE002: households with incomes below poverty level (numerator for poverty % calculation)
 # codes for variables are the same are the same for tracts and block groups
 
+# function to create columns for values of interest
+def create_equity_measures(df, by=None, aggfunc=None):
+    """
+    Takes in a dataframe, and optionally fields to group by and an aggregation function.
+    Calculates the equity measures.
+    Returns pandas series with the equity measures (counts and proportions). 
+    """
+    if by is not None and aggfunc is None:
+        raise TypeError("Must provide both groupby field(s) and aggfunc")
+    elif df is None:
+        raise TypeError("Must provide a dataframe")
+    elif by is None and aggfunc is None:
+        prop_poc = (df.aluke001 - df.aluke003) / df.aluke001
+        prop_white = df.aluke003 / df.aluke001
+        prop_latino_allraces = df.aluke012 / df.aluke001
+        prop_black = df.aluce003 / df.aluce001
+        prop_asian = df.aluce005 / df.aluce001
+        prop_poverty = df.alwye002 / df.alwye001
+    elif by is not None and aggfunc is not None: # condition in which both groupby field and aggfunc are passed, to return aggregations of groups
+        prop_poc = (df.groupby(by=by).aluke001.agg(aggfunc) - df.groupby(by=by).aluke003.agg(aggfunc)) / df.groupby(by=by).aluke001.agg(aggfunc)
+        prop_white = df.groupby(by=by).aluke003.agg(aggfunc) / df.groupby(by=by).aluke001.agg(aggfunc)
+        prop_latino_allraces = df.groupby(by=by).aluke012.agg(aggfunc) / df.groupby(by=by).aluke001.agg(aggfunc)
+        prop_black = df.groupby(by=by).aluce003.agg(aggfunc) / df.groupby(by=by).aluce001.agg(aggfunc)
+        prop_asian = df.groupby(by=by).aluce005.agg(aggfunc) / df.groupby(by=by).aluce001.agg(aggfunc)
+        prop_poverty = df.groupby(by=by).alwye002.agg(aggfunc) / df.groupby(by=by).alwye001.agg(aggfunc)
+    else: # condition in which only aggfunc is passed, to return aggregation of entire dataframe
+        prop_poc = (df.aluke001.agg(aggfunc) - df.aluke003.agg(aggfunc)) / df.aluke001.agg(aggfunc)
+        prop_white = df.aluke003.agg(aggfunc) / df.aluke001.agg(aggfunc)
+        prop_latino_allraces = df.aluke012.agg(aggfunc) / df.aluke001.agg(aggfunc)
+        prop_black = df.aluce003.agg(aggfunc) / df.aluce001.agg(aggfunc)
+        prop_asian = df.aluce005.agg(aggfunc) / df.aluce001.agg(aggfunc)
+        prop_poverty = df.alwye002.agg(aggfunc) / df.alwye001.agg(aggfunc)
+    return prop_poc, prop_white, prop_latino_allraces, prop_black, prop_asian, prop_poverty
+
 # create new columns for values of interest
 for df in [blockgroups_headsigns_joined, acs_blockgroups]:
-    df["prop_poc"] = (df.aluke001 - df.aluke003) / df.aluke001
-    df["prop_white"] = df.aluke003 / df.aluke001
-    df["prop_latino_allraces"] = df.aluke012 / df.aluke001
-    df["prop_black"] = df.aluce003 / df.aluce001
-    df["prop_asian"] = df.aluce005 / df.aluce001
-    df["prop_poverty"] = df.alwye002 / df.alwye001
+    df["prop_poc"], df["prop_white"], df["prop_latino_allraces"], df["prop_black"], df["prop_asian"], df["prop_poverty"] = create_equity_measures(df)
+    #df["prop_poc"] = (df.aluke001 - df.aluke003) / df.aluke001
+    #df["prop_white"] = df.aluke003 / df.aluke001
+    #df["prop_latino_allraces"] = df.aluke012 / df.aluke001
+    #df["prop_black"] = df.aluce003 / df.aluce001
+    #df["prop_asian"] = df.aluce005 / df.aluce001
+    #df["prop_poverty"] = df.alwye002 / df.alwye001
 
 # define new dataframes for each route and for the whole service area, to avoid double-counting
 # for each route (dropping block groups that are associated more than once with a route)
@@ -520,9 +555,37 @@ blockgroups_servicearea_joined = blockgroups_headsigns_joined.drop_duplicates(["
 service_area_distribution = blockgroups_servicearea_joined[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].describe()
 # add statewide mean for each of the variables
 service_area_distribution.loc["state_mean"] = acs_blockgroups[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].mean()
+
+# calculating measures for the whole service area and for each route
+route_index = list(blockgroups_servicearea_joined.route_short_name.unique())
+route_index.append("service_area")
+columns = ["count_total", "count_poc", "prop_poc", "count_white", "prop_white", "count_latino_allraces", "prop_latino_allraces", "count_black", "prop_black", "count_asian", "prop_asian", "count_poverty_hholds", "prop_poverty"]
+equity_measures_byroute = pd.DataFrame(index=route_index, columns=columns)
+# calculatep proportion measures with function
+equity_measures_byroute["prop_poc"], equity_measures_byroute["prop_white"], equity_measures_byroute["prop_latino_allraces"], equity_measures_byroute["prop_black"], equity_measures_byroute["prop_asian"], equity_measures_byroute["prop_poverty"] = create_equity_measures(blockgroups_routes_joined, by="route_short_name", aggfunc=np.sum)
+# calculate proportion measures for the entire service area and statewide, and add to dataframe
+equity_measures_byroute.loc["service_area", ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]] = list(create_equity_measures(blockgroups_servicearea_joined, aggfunc=np.sum))
+equity_measures_byroute.loc["statewide", ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]] = list(create_equity_measures(acs_blockgroups, aggfunc=np.sum))
+# calculate total measures by route, as well as for the entire service area and statewide, and add to dataframe
+totals_map_dict = {"count_total": "alube001",
+                    "count_white": "aluke003",
+                    "count_latino_allraces": "aluke012",
+                    "count_black": "aluce003", 
+                    "count_asian": "aluce005",
+                    "count_poverty_hholds": "alwye001"}
+for column in totals_map_dict:
+    #print(column)
+    #print(original_variable)
+    equity_measures_byroute[column] = blockgroups_routes_joined.groupby(by="route_short_name")[totals_map_dict[column]].sum()
+    equity_measures_byroute.loc["service_area", column] = blockgroups_servicearea_joined[totals_map_dict[column]].sum()
+    equity_measures_byroute.loc["statewide", column] = acs_blockgroups[totals_map_dict[column]].sum()
+# calculate POC count separately bc you have to subtract
+equity_measures_byroute["count_poc"] = blockgroups_routes_joined.groupby(by="route_short_name").aluke001.sum() - blockgroups_routes_joined.groupby(by="route_short_name").aluke003.sum()
+equity_measures_byroute.loc["service_area", "count_poc"] = blockgroups_servicearea_joined.aluke001.sum() - blockgroups_servicearea_joined.aluke003.sum()
+equity_measures_byroute.loc["statewide", "count_poc"] = acs_blockgroups.aluke001.sum() - acs_blockgroups.aluke003.sum()
+
 # POC proportion is higher than the ~0.44 reported in 2017 Title VI report for the service area
 # maybe your 1/4 mile buffer is narrower than the one they use
 
-# calculating measures for the whole service area and for each route
-
-
+# calculate FTA equity measures
+# routes 1/3 of whose route miles run through "equity neighborhoods", which are those that have a larger-than-
