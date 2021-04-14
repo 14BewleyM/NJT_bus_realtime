@@ -1,3 +1,5 @@
 *.csv
 *.gpkg
 *.gpkg-journal
+*.txt
+dedupe_sql.py

@@ -63,12 +63,15 @@ logging.info(f"Logging started at {datetime.datetime.now()}")
 # %% load data and setup dataframe
 logging.info(f"Reading in data from {data_path}")
 # read in in chunks for big file
-chunk_size = 1.5 *  (10 ** 6) # number of rows to read in at a time (or once, as the case currently is)
+chunk_size = 1.5 *  (10 ** 5) # number of rows to read in at a time (or once, as the case currently is)
 buspositions = pd.DataFrame()
 with pd.read_csv(data_path, chunksize=chunk_size) as reader:
+    iterator = 0
     for chunk in reader:
+        print(f"Reading in chunk {iterator} with chunk size of {chunk_size} max rows")
         buspositions = buspositions.append(chunk)
-        break # break after first run
+        # break # heylisten break after first run
+        iterator += 1
 #buspositions = pd.read_csv(data_path)
 #TODO@14BewleyM make sure the bigger dataset reads in okay (modify path from testdata.csv to testdata_bigger.csv)
 #buspositions = gpd.GeoDataFrame(pd.read_csv(data_path), 
@@ -79,8 +82,10 @@ buspositions.crs = "EPSG:4326"
 buspositions = buspositions.to_crs("EPSG:3424")
 print(f"Initial dataset has {buspositions.shape[0]} records")
 
-# set timestamp column to be datetime       
+# set timestamp column to be datetime and add day and month columns   
 buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
+buspositions["month"] = buspositions.timestamp.dt.month
+buspositions["day"] = buspositions.timestamp.dt.day
 
 # set other data types
 buspositions.vehicle_id = buspositions.vehicle_id.astype(str).str.split(".").str[0]
@@ -104,18 +109,20 @@ print(f"There are {duplicate_count} observations with duplicate geometries")
 # so should subset by vehicle id as well as geometry
 duplicate_count = buspositions.duplicated(subset=["vehicle_id", "geometry"], keep="first").sum()
 print(f"There are {duplicate_count} observations with duplicate vehicle ids and geometries")
+# BUT it may be that over multiple days and runs there are legit observations of duplicate geometries
+# so should also subset by those
+duplicate_count = buspositions.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
+print(f"There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
 
 # dataframe for examining all duplicates next to each other
 #buspositions[buspositions.duplicated(subset=["vehicle_id", "geometry"], keep=False)].sort_values(by=["vehicle_id", "lat", "timestamp"])
 
 # drop all except first duplicate for each vehicle
 print(f"Dropping {duplicate_count} duplicates")
-buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["vehicle_id", "geometry"], keep="first")]
+buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")]
 print(f"Final dataset has {buspositions.shape[0]} records") # when run all together, this prints a value different from the actual final row count...
 
 # create time elapsed column
-buspositions["month"] = buspositions.timestamp.dt.month
-buspositions["day"] = buspositions.timestamp.dt.day
 print(f"Creating elapsed time column")
 buspositions["time_elapsed"] = buspositions.sort_values(by=["timestamp", "vehicle_id", "run_number"]).groupby(by=["month", "day", "vehicle_id", "run_number"])["timestamp"].diff().fillna(pd.Timedelta(seconds=0))
 # testing for negative times
@@ -320,8 +327,8 @@ headsign_shapes_dissolved_bydirection = pd.concat([headsign_shapes_dissolved_byd
 # seems to produce the right number of rows
 
 # export to geopackage for visual inspection
-export_maps = 1
-if export_maps == 0:
+export_maps = 0
+if export_maps == 1:
     os.chdir(main_directory)
     headsign_shapes.to_file("headsign_shapes.gpkg", driver="GPKG")
     headsign_shapes_dissolved.to_file("headsign_shapes_dissolved.gpkg", driver="GPKG")
@@ -546,7 +553,7 @@ for df in [blockgroups_headsigns_joined, acs_blockgroups]:
 
 # define new dataframes for each route and for the whole service area, to avoid double-counting
 # for each route (dropping block groups that are associated more than once with a route)
-blockgroups_routes_joined = blockgroups_headsigns_joined.drop_duplicates(["route_short_name", "gisjoin"])
+blockgroups_routes_joined_buffer = blockgroups_headsigns_joined.drop_duplicates(["route_short_name", "gisjoin"])
 # for the whole service area (dropping all duplicated block groups, using gisjoin field as unique id for tracts)
 blockgroups_servicearea_joined = blockgroups_headsigns_joined.drop_duplicates(["gisjoin"])
 
@@ -561,8 +568,9 @@ route_index = list(blockgroups_servicearea_joined.route_short_name.unique())
 route_index.append("service_area")
 columns = ["count_total", "count_poc", "prop_poc", "count_white", "prop_white", "count_latino_allraces", "prop_latino_allraces", "count_black", "prop_black", "count_asian", "prop_asian", "count_poverty_hholds", "prop_poverty"]
 equity_measures_byroute = pd.DataFrame(index=route_index, columns=columns)
-# calculatep proportion measures with function
-equity_measures_byroute["prop_poc"], equity_measures_byroute["prop_white"], equity_measures_byroute["prop_latino_allraces"], equity_measures_byroute["prop_black"], equity_measures_byroute["prop_asian"], equity_measures_byroute["prop_poverty"] = create_equity_measures(blockgroups_routes_joined, by="route_short_name", aggfunc=np.sum)
+# calculate proportion measures with function (do this also for the merged blockgroups dataframe, for later use in calculating Title VI measures)
+equity_measures_byroute["prop_poc"], equity_measures_byroute["prop_white"], equity_measures_byroute["prop_latino_allraces"], equity_measures_byroute["prop_black"], equity_measures_byroute["prop_asian"], equity_measures_byroute["prop_poverty"] = create_equity_measures(blockgroups_routes_joined_buffer, by="route_short_name", aggfunc=np.sum)
+blockgroups_merged["prop_poc"], blockgroups_merged["prop_white"], blockgroups_merged["prop_latino_allraces"], blockgroups_merged["prop_black"], blockgroups_merged["prop_asian"], blockgroups_merged["prop_poverty"] = create_equity_measures(blockgroups_merged)
 # calculate proportion measures for the entire service area and statewide, and add to dataframe
 equity_measures_byroute.loc["service_area", ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]] = list(create_equity_measures(blockgroups_servicearea_joined, aggfunc=np.sum))
 equity_measures_byroute.loc["statewide", ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]] = list(create_equity_measures(acs_blockgroups, aggfunc=np.sum))
@@ -576,11 +584,11 @@ totals_map_dict = {"count_total": "alube001",
 for column in totals_map_dict:
     #print(column)
     #print(original_variable)
-    equity_measures_byroute[column] = blockgroups_routes_joined.groupby(by="route_short_name")[totals_map_dict[column]].sum()
+    equity_measures_byroute[column] = blockgroups_routes_joined_buffer.groupby(by="route_short_name")[totals_map_dict[column]].sum()
     equity_measures_byroute.loc["service_area", column] = blockgroups_servicearea_joined[totals_map_dict[column]].sum()
     equity_measures_byroute.loc["statewide", column] = acs_blockgroups[totals_map_dict[column]].sum()
 # calculate POC count separately bc you have to subtract
-equity_measures_byroute["count_poc"] = blockgroups_routes_joined.groupby(by="route_short_name").aluke001.sum() - blockgroups_routes_joined.groupby(by="route_short_name").aluke003.sum()
+equity_measures_byroute["count_poc"] = blockgroups_routes_joined_buffer.groupby(by="route_short_name").aluke001.sum() - blockgroups_routes_joined_buffer.groupby(by="route_short_name").aluke003.sum()
 equity_measures_byroute.loc["service_area", "count_poc"] = blockgroups_servicearea_joined.aluke001.sum() - blockgroups_servicearea_joined.aluke003.sum()
 equity_measures_byroute.loc["statewide", "count_poc"] = acs_blockgroups.aluke001.sum() - acs_blockgroups.aluke003.sum()
 
@@ -588,4 +596,20 @@ equity_measures_byroute.loc["statewide", "count_poc"] = acs_blockgroups.aluke001
 # maybe your 1/4 mile buffer is narrower than the one they use
 
 # calculate FTA equity measures
-# routes 1/3 of whose route miles run through "equity neighborhoods", which are those that have a larger-than-
+# routes 1/3 of whose revenue miles run through "equity neighborhoods", which are those where the percentage minority population is greater than the percentage for the service area
+service_area_poc_prop = equity_measures_byroute.loc["service_area", "prop_poc"]
+service_area_black_prop = equity_measures_byroute.loc["service_area", "prop_black"]
+service_area_latino_prop = equity_measures_byroute.loc["service_area", "prop_latino_allraces"]
+service_area_asian_prop = equity_measures_byroute.loc["service_area", "prop_asian"]
+# designate block groups as equity block groups if their proportion is greater than relevant service area proportion
+blockgroups_routes_joined_buffer["equity_block_group"] = False
+blockgroups_routes_joined_buffer.loc[blockgroups_routes_joined_buffer.prop_poc > service_area_poc_prop, "equity_block_group"] = True
+blockgroups_merged["equity_block_group"] = False
+blockgroups_merged.loc[blockgroups_merged.prop_poc > service_area_poc_prop, "equity_block_group"] = True
+# redesignate geometry and reproject to equidistant projection for distance measurements
+# need to calculate a new intersection using only the line shapes, not their buffer
+blockgroups_routes_joined_line = gpd.sjoin(headsign_shapes_dissolved_bydirection.to_crs("EPSG:3424"), blockgroups_merged.to_crs("EPSG:3424"), op="intersects", how="left")
+# find ratio of route length within equity block groups to route length outside of equity block groups
+# for each route, dissolve on equity_block_group field, then calculate length
+blockgroups_routes_joined_line = blockgroups_routes_joined_line.dissolve(by=["route_short_name", "equity_block_group"]) # maybe add as_index=False if don't want groupby fields to be new index
+# add to equity_measures_byroute dataframe as new columns, "rev_miles_total", "rev_miles_equity", "rev_miles_equity_ratio"
