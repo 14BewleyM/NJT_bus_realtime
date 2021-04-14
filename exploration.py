@@ -47,7 +47,8 @@ generate_maps = 0
 main_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper"
 code_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/code"
 gtfs_directory = "C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs"
-data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv"
+data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/data_deduped.csv"
+data_path_bigger = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv"
 data_path_smaller = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv"
 data_path_tract = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_tract.csv"
 data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_blck_grp.csv"
@@ -63,56 +64,54 @@ logging.info(f"Logging started at {datetime.datetime.now()}")
 # %% load data and setup dataframe
 logging.info(f"Reading in data from {data_path}")
 # read in in chunks for big file
-chunk_size = 1.5 *  (10 ** 5) # number of rows to read in at a time (or once, as the case currently is)
+chunk_size = 1.5 *  (10 ** 6) # number of rows to read in at a time (or once, as the case currently is)
 buspositions = pd.DataFrame()
+cols = ["timestamp","vehicle_id", "route_number", "run_number", "headsign", "headsign", "has_service", "lon", "lat"]
 with pd.read_csv(data_path, chunksize=chunk_size) as reader:
     iterator = 0
     for chunk in reader:
         print(f"Chunk {iterator}: Reading in chunk {iterator} with chunk size of {chunk_size} max rows")
-        buspositions = buspositions.append(chunk)
-        print(f"Chunk {iterator}: Dataframe has {buspositions.shape[0]} rows")
-        buspositions = gpd.GeoDataFrame(buspositions, 
-                            geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
-        buspositions.crs = "EPSG:4326"
+
+        chunk = gpd.GeoDataFrame(chunk, 
+                            geometry=gpd.points_from_xy(chunk.lon, chunk.lat))
+        chunk.crs = "EPSG:4326"
 
         # set timestamp column to be datetime and add day and month columns   
-        buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
-        buspositions["month"] = buspositions.timestamp.dt.month
-        buspositions["day"] = buspositions.timestamp.dt.day
+        chunk.timestamp = pd.to_datetime(chunk.timestamp)
+        chunk["month"] = chunk.timestamp.dt.month
+        chunk["day"] = chunk.timestamp.dt.day
 
         # set other data types
-        buspositions.vehicle_id = buspositions.vehicle_id.astype(str).str.split(".").str[0]
-        buspositions.route_number = buspositions.route_number.astype(str).str.split(".").str[0] 
-        buspositions.has_service = buspositions.has_service.map({"t":True, "f":False})
+        chunk.vehicle_id = chunk.vehicle_id.astype(str).str.split(".").str[0]
+        chunk.route_number = chunk.route_number.astype(str).str.split(".").str[0] 
+        #chunk.has_service = chunk.has_service.map({"t":True, "f":False})
 
         # drop observations for routes that returned no service
-        print(f"Chunk {iterator}: Dropping {buspositions.shape[0] - buspositions.has_service.sum()} observations from routes with no service")
-        buspositions = buspositions[buspositions.has_service==True]
+        if chunk.has_service.dtype != bool:
+            chunk.has_service = chunk.has_service.map({"t":True, "f":False})
+        print(f"Chunk {iterator}: Dropping {chunk.shape[0] - chunk.has_service.sum()} observations from routes with no service")
+        chunk = chunk[chunk.has_service==True]
 
         # some headsigns had ampersand replaced with &amp;amp;
         # put ampersand back
-        buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
+        chunk.headsign = chunk.headsign.str.replace("amp;amp;", "")
 
         # check for duplicates by month, day, run number, vehicle id, and geometry
         # records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
-        duplicate_count = buspositions.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
+        duplicate_count = chunk.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
         print(f"Chunk {iterator}: There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
 
         # drop all except first duplicate for each vehicle
         print(f"Chunk {iterator}: Dropping {duplicate_count} duplicates")
-        buspositions = buspositions.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
+        chunk = chunk.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
+        buspositions = buspositions.append(chunk)
         print(f"Chunk {iterator}: Dataset has {buspositions.shape[0]} records after dropping") # when run all together, this prints a value different from the actual final row count...
 
-        # break # heylisten break after first run
         iterator += 1
-        #if iterator == 100:
-         #   break # set to break after about 17 mill rows
-            # can try to dedupe as you go in future to reduce overall size
-        # it'll append a bunch of rows (up to ~17 mill) but just hang even if you reduce the size
-#buspositions = pd.read_csv(data_path)
-#TODO@14BewleyM make sure the bigger dataset reads in okay (modify path from testdata.csv to testdata_bigger.csv)
-#buspositions = gpd.GeoDataFrame(pd.read_csv(data_path), 
- #                     geometry=gpd.points_from_xy(pd.read_csv(data_path).lon, pd.read_csv(data_path).lat))
+        if iterator == 3:
+            break # heylisten
+
+
 buspositions = gpd.GeoDataFrame(buspositions, 
                       geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
 buspositions.crs = "EPSG:4326"
@@ -127,7 +126,8 @@ buspositions["day"] = buspositions.timestamp.dt.day
 # set other data types
 buspositions.vehicle_id = buspositions.vehicle_id.astype(str).str.split(".").str[0]
 buspositions.route_number = buspositions.route_number.astype(str).str.split(".").str[0] 
-buspositions.has_service = buspositions.has_service.map({"t":True, "f":False})
+if buspositions.has_service.dtype != bool:
+    buspositions.has_service = buspositions.has_service.map({"t":True, "f":False})
 
 # drop observations for routes that returned no service
 print(f"Dropping {buspositions.shape[0] - buspositions.has_service.sum()} observations from routes with no service")
@@ -137,17 +137,8 @@ buspositions = buspositions[buspositions.has_service==True]
 # put ampersand back
 buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
 
-# check for duplicate coordinates in reduced dataframe
-# mark the first duplicate, assuming that every duplicate afterwards erroneously suggests vehicle isn't moving
-duplicate_count = buspositions.duplicated(subset="geometry", keep="first").sum()
-print(f"There are {duplicate_count} observations with duplicate geometries")
-# wow, 942297 duplicates
-# BUT at least some of these are legit (eg different vehicles on different runs somehow reporting exactly the same coordinates)
-# so should subset by vehicle id as well as geometry
-duplicate_count = buspositions.duplicated(subset=["vehicle_id", "geometry"], keep="first").sum()
-print(f"There are {duplicate_count} observations with duplicate vehicle ids and geometries")
-# BUT it may be that over multiple days and runs there are legit observations of duplicate geometries
-# so should also subset by those
+# check for duplicates by month, day, run number, vehicle id, and geometry
+# records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
 duplicate_count = buspositions.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
 print(f"There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
 
@@ -647,4 +638,10 @@ blockgroups_routes_joined_line = gpd.sjoin(headsign_shapes_dissolved_bydirection
 # find ratio of route length within equity block groups to route length outside of equity block groups
 # for each route, dissolve on equity_block_group field, then calculate length
 blockgroups_routes_joined_line = blockgroups_routes_joined_line.dissolve(by=["route_short_name", "equity_block_group"]) # maybe add as_index=False if don't want groupby fields to be new index
+blockgroups_routes_joined_line["length"] = blockgroups_routes_joined_line.geometry.length
+blockgroups_routes_joined_line.groupby(by=["route_short_name", "equity_block_group"]).length.sum().reset_index()
 # add to equity_measures_byroute dataframe as new columns, "rev_miles_total", "rev_miles_equity", "rev_miles_equity_ratio"
+equity_measures_byroute.loc[equity_measures_byroute.reset_index().route == blockgroups_routes_joined_line.route_short_name, "rev_miles_total"] = blockgroups_routes_joined_line
+
+
+# TODO@14BewleyM calculate speed variability, assign to block groups, and assess 
