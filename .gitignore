@@ -3,3 +3,4 @@
 *.gpkg-journal
 *.txt
 dedupe_sql.py
+*.jl

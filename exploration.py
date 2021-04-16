@@ -66,7 +66,7 @@ logging.info(f"Reading in data from {data_path}")
 # read in in chunks for big file
 chunk_size = 1.5 *  (10 ** 6) # number of rows to read in at a time (or once, as the case currently is)
 buspositions = pd.DataFrame()
-cols = ["timestamp","vehicle_id", "route_number", "run_number", "headsign", "headsign", "has_service", "lon", "lat"]
+cols = ["timestamp","vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat"]
 with pd.read_csv(data_path, chunksize=chunk_size) as reader:
     iterator = 0
     for chunk in reader:
