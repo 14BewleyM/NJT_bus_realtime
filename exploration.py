@@ -40,6 +40,9 @@ import folium
 import os
 import re
 import sqlalchemy
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy import Column, Integer, String, DateTime, Boolean
+from geoalchemy2 import Geometry
 
 # %% some initial settings
 generate_maps = 0
@@ -56,6 +59,10 @@ data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses
 boundary_path_tract = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_tracts/US_tract_2019.shp"
 boundary_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups/NJ_blck_grp_2019.shp"
 
+# projections
+NJ_equidistant = "EPSG:3424"
+equal_area = "EPSG:5070"
+
 # %% set up logging
 logging.basicConfig(filename="log.log", 
                     level=logging.INFO) # set to INFO if you want info messages to log
@@ -67,108 +74,176 @@ logging.info(f"Reading in data from {data_path}")
 # read in in chunks for big file
 chunk_size = 1.5 *  (10 ** 6) # number of rows to read in at a time (or once, as the case currently is)
 buspositions = pd.DataFrame()
-# trying dedupe dataset with sql before reading in, to reduce size 
-# create connection to postgresql database with full dataset
-# create engine
-with open("database_pass.txt", "r") as file:
-    lines = file.readlines()
-    database_pass = lines[0]
-engine = sqlalchemy.create_engine(f"postgresql://postgres:{database_pass}@localhost:5432/bustest", echo=True)
-# create session
-Session = sqlalchemy.orm.sessionmaker(bind=engine)
-session = Session()
 
-# identify busposition table, as per: https://stackoverflow.com/questions/30785892/simple-select-statement-on-existing-table-with-sqlalchemy
-metadata = sqlalchemy.MetaData(bind=None)
-buspositions = sqlalchemy.Table("buspositions",
-                                metadata,
-                                autoload=True,
-                                autoload_with=engine
-                                )
+try_sql = 0
+if try_sql==1:
+    # trying to dedupe dataset with sql before reading in, to reduce size 
+    DeclarativeBase = declarative_base()
 
-testdf = pd.read_sql_query("SELECT * FROM buspositions WHERE has_service=True", db)
+    # sqlalchemy documentation about types: https://docs.sqlalchemy.org/en/13/core/type_basics.html
+    # one of these represents one vehicle position
+    class Busposition(DeclarativeBase):
+        __tablename__ = "buspositions"
+        id = Column(Integer, primary_key=True)
+        timestamp = sqlalchemy.Column(DateTime)
+        vehicle_id = sqlalchemy.Column(String)
+        route_number = sqlalchemy.Column(String)
+        direction_compass = sqlalchemy.Column(String)
+        #direction_compass_abbrev = sqlalchemy.Column(String)
+        direction = sqlalchemy.Column(String)
+        lonlat = sqlalchemy.Column(Geometry('POINT'))
+        run_number = sqlalchemy.Column(String)
+        headsign = sqlalchemy.Column(String)
+        has_service = sqlalchemy.Column(Boolean)
+        request_id = sqlalchemy.Column(Integer)
+        lon = sqlalchemy.Column(String)
+        lat = sqlalchemy.Column(String)
 
-cols = ["timestamp","vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat"]
-with pd.read_csv(data_path, chunksize=chunk_size) as reader:
-    iterator = 0
-    for chunk in reader:
-        print(f"Chunk {iterator}: Reading in chunk {iterator} with chunk size of {chunk_size} max rows")
+    # create connection to postgresql database with full dataset
+    # create engine
+    with open("database_pass.txt", "r") as file:
+        lines = file.readlines()
+        database_pass = lines[0]
+    engine = sqlalchemy.create_engine(f"postgresql://postgres:{database_pass}@localhost:5432/bustest", echo=True)
+    # create session
+    Session = sqlalchemy.orm.sessionmaker(bind=engine)
+    session = Session()
 
-        chunk = gpd.GeoDataFrame(chunk, 
-                            geometry=gpd.points_from_xy(chunk.lon, chunk.lat))
-        chunk.crs = "EPSG:4326"
+    # identify busposition table, as per: https://stackoverflow.com/questions/30785892/simple-select-statement-on-existing-table-with-sqlalchemy
+    metadata = sqlalchemy.MetaData(bind=None)
+    buspositions = sqlalchemy.Table("buspositions",
+                                    metadata,
+                                    autoload=True,
+                                    autoload_with=engine
+                                    )
+    # sqlalchemy tutorial on querying: https://docs.sqlalchemy.org/en/14/orm/tutorial.html#querying
+    # a more helpful sqlalchemy tutorial: https://hackersandslackers.com/database-queries-sqlalchemy-orm/
+    # example:
+    testquery = session.query(Busposition).order_by(Busposition.timestamp) # query for all bus positions ordered by timestamp
+    for busposition in testquery:
+        print(busposition.timestamp) # print all the timestamps (takes forever bc ofc)
 
-        # set timestamp column to be datetime and add day and month columns   
-        chunk.timestamp = pd.to_datetime(chunk.timestamp)
-        chunk["month"] = chunk.timestamp.dt.month
-        chunk["day"] = chunk.timestamp.dt.day
+    # count rows
+    test_result = engine.execute(sqlalchemy.text("SELECT count(*) FROM buspositions;")).fetchall()
+    row_count= test_result[0][0]
+    # select distinct rows (rows that probably aren't duplicated observations)
+    # based on this method: https://stackoverflow.com/questions/54418/how-do-i-or-can-i-select-distinct-on-multiple-columns
+    sql = "SELECT * FROM buspositions b \
+                                    WHERE NOT EXISTS( \
+                                        SELECT FROM buspositions b1 \
+                                        WHERE b.run_number = b1.run_number \
+                                        AND b.vehicle_id = b1.vehicle_id \
+                                        AND b.lon = b1.lon \
+                                        AND b.lat = b1.lat \
+                                        AND date_trunc('day', b.timestamp)::date = date_trunc('day', b1.timestamp)::date \
+                                        AND b.id <> b1.id \
+                                        AND b.has_service = True \
+                                        )"
+    #distinct_rows = engine.execute(sqlalchemy.text(sql))
+    #print(f"Result after deduping with SQL has {distinct_rows.rowcount} rows")
+    print(f"Reading in and deduplicating dataset from database")
+    buspositions = pd.read_sql_query(sql, engine) # should maybe try to wrap in sqlalchemy.text(), as best practice
+    print(f"Dataset has {buspositions.shape[0]} rows")
+    print("Creating date column")
+    buspositions["date"] = buspositions.timestamp.dt.date
+    print(f"Removing {(buspositions.has_service == False).sum()} rows with no service")
+    buspositions = buspositions[buspositions.has_service==True]
 
-        # set other data types
-        chunk.vehicle_id = chunk.vehicle_id.astype(str).str.split(".").str[0]
-        chunk.route_number = chunk.route_number.astype(str).str.split(".").str[0] 
-        #chunk.has_service = chunk.has_service.map({"t":True, "f":False})
+    # some headsigns had ampersand replaced with &amp;amp;
+    # put ampersand back
+    print(f"Replacing ampersands in {buspositions.headsign.str.contains('amp;amp;').sum()} rows that had ampersands replaced with amp;amp;")
+    buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
 
-        # drop observations for routes that returned no service
-        if chunk.has_service.dtype != bool:
-            chunk.has_service = chunk.has_service.map({"t":True, "f":False})
-        print(f"Chunk {iterator}: Dropping {chunk.shape[0] - chunk.has_service.sum()} observations from routes with no service")
-        chunk = chunk[chunk.has_service==True]
+    print(f"Converting dataframe to geodataframe and converting to equidistant projection")
+    buspositions = gpd.GeoDataFrame(buspositions, 
+                        geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
+    buspositions.crs = "EPSG:4326"
+    buspositions = buspositions.to_crs(NJ_equidistant)
 
-        # some headsigns had ampersand replaced with &amp;amp;
-        # put ampersand back
-        chunk.headsign = chunk.headsign.str.replace("amp;amp;", "")
+read_in_pandas = 0
+if read_in_pandas == 1:
+    # read in with pandas
+    cols = ["timestamp","vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat"]
+    with pd.read_csv(data_path, chunksize=chunk_size) as reader:
+        iterator = 0
+        for chunk in reader:
+            print(f"Chunk {iterator}: Reading in chunk {iterator} with chunk size of {chunk_size} max rows")
 
-        # check for duplicates by month, day, run number, vehicle id, and geometry
-        # records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
-        duplicate_count = chunk.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
-        print(f"Chunk {iterator}: There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
+            chunk = gpd.GeoDataFrame(chunk, 
+                                geometry=gpd.points_from_xy(chunk.lon, chunk.lat))
+            chunk.crs = "EPSG:4326"
 
-        # drop all except first duplicate for each vehicle
-        print(f"Chunk {iterator}: Dropping {duplicate_count} duplicates")
-        chunk = chunk.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
-        buspositions = buspositions.append(chunk)
-        print(f"Chunk {iterator}: Dataset has {buspositions.shape[0]} records after dropping") # when run all together, this prints a value different from the actual final row count...
+            # set timestamp column to be datetime and add day and month columns   
+            chunk.timestamp = pd.to_datetime(chunk.timestamp)
+            chunk["month"] = chunk.timestamp.dt.month
+            chunk["day"] = chunk.timestamp.dt.day
 
-        iterator += 1
-        if iterator == 3:
-            break # heylisten
+            # set other data types
+            chunk.vehicle_id = chunk.vehicle_id.astype(str).str.split(".").str[0]
+            chunk.route_number = chunk.route_number.astype(str).str.split(".").str[0] 
+            #chunk.has_service = chunk.has_service.map({"t":True, "f":False})
+
+            # drop observations for routes that returned no service
+            if chunk.has_service.dtype != bool:
+                chunk.has_service = chunk.has_service.map({"t":True, "f":False})
+            print(f"Chunk {iterator}: Dropping {chunk.shape[0] - chunk.has_service.sum()} observations from routes with no service")
+            chunk = chunk[chunk.has_service==True]
+
+            # some headsigns had ampersand replaced with &amp;amp;
+            # put ampersand back
+            chunk.headsign = chunk.headsign.str.replace("amp;amp;", "")
+
+            # check for duplicates by month, day, run number, vehicle id, and geometry
+            # records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
+            duplicate_count = chunk.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
+            print(f"Chunk {iterator}: There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
+
+            # drop all except first duplicate for each vehicle
+            print(f"Chunk {iterator}: Dropping {duplicate_count} duplicates")
+            chunk = chunk.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
+            buspositions = buspositions.append(chunk)
+            print(f"Chunk {iterator}: Dataset has {buspositions.shape[0]} records after dropping") # when run all together, this prints a value different from the actual final row count...
+
+            iterator += 1
+            if iterator == 3:
+                break # heylisten
 
 
-buspositions = gpd.GeoDataFrame(buspositions, 
-                      geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
-buspositions.crs = "EPSG:4326"
-buspositions = buspositions.to_crs("EPSG:3424")
-print(f"Initial dataset has {buspositions.shape[0]} records")
+    buspositions = gpd.GeoDataFrame(buspositions, 
+                        geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
+    buspositions.crs = "EPSG:4326"
+    buspositions = buspositions.to_crs(NJ_equidistant)
+    print(f"Initial dataset has {buspositions.shape[0]} records")
 
-# set timestamp column to be datetime and add day and month columns   
-buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
-buspositions["month"] = buspositions.timestamp.dt.month
-buspositions["day"] = buspositions.timestamp.dt.day
+    # set timestamp column to be datetime and add day and month columns   
+    buspositions.timestamp = pd.to_datetime(buspositions.timestamp)
+    buspositions["month"] = buspositions.timestamp.dt.month
+    buspositions["day"] = buspositions.timestamp.dt.day
 
-# set other data types
-buspositions.vehicle_id = buspositions.vehicle_id.astype(str).str.split(".").str[0]
-buspositions.route_number = buspositions.route_number.astype(str).str.split(".").str[0] 
-if buspositions.has_service.dtype != bool:
-    buspositions.has_service = buspositions.has_service.map({"t":True, "f":False})
+    # set other data types
+    buspositions.vehicle_id = buspositions.vehicle_id.astype(str).str.split(".").str[0]
+    buspositions.route_number = buspositions.route_number.astype(str).str.split(".").str[0] 
+    if buspositions.has_service.dtype != bool:
+        buspositions.has_service = buspositions.has_service.map({"t":True, "f":False})
 
-# drop observations for routes that returned no service
-print(f"Dropping {buspositions.shape[0] - buspositions.has_service.sum()} observations from routes with no service")
-buspositions = buspositions[buspositions.has_service==True]
+    # drop observations for routes that returned no service
+    print(f"Dropping {buspositions.shape[0] - buspositions.has_service.sum()} observations from routes with no service")
+    buspositions = buspositions[buspositions.has_service==True]
 
-# some headsigns had ampersand replaced with &amp;amp;
-# put ampersand back
-buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
+    # some headsigns had ampersand replaced with &amp;amp;
+    # put ampersand back
+    buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
 
-# check for duplicates by month, day, run number, vehicle id, and geometry
-# records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
-duplicate_count = buspositions.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
-print(f"There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
+    # check for duplicates by month, day, run number, vehicle id, and geometry
+    # records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
+    duplicate_count = buspositions.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
+    print(f"There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
 
-# drop all except first duplicate for each vehicle
-print(f"Dropping {duplicate_count} duplicates")
-#buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")]
-buspositions = buspositions.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
-print(f"Final dataset has {buspositions.shape[0]} records")
+    # drop all except first duplicate for each vehicle
+    print(f"Dropping {duplicate_count} duplicates")
+    #buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")]
+    buspositions = buspositions.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
+    print(f"Final dataset has {buspositions.shape[0]} records")
 
 # create time elapsed column
 print(f"Creating elapsed time column")
@@ -178,6 +253,7 @@ negative_times = (buspositions.time_elapsed < datetime.timedelta(0)).sum()
 print(f"{negative_times} records calculated with negative elapsed time")
 # create timedelta columns in seconds
 buspositions["time_elapsed_seconds"] = buspositions.time_elapsed.apply(pd.Timedelta.total_seconds)
+
 export_bus_positions = 1
 if export_bus_positions == 0:
     # drop timedelta column (bc can only be exported to geopackage as seconds, not as timedelta type)
@@ -345,7 +421,7 @@ len(set(headsign_shapes.shape_id.unique()) - set(shapes_full.shape_id.unique()))
 headsign_shapes = pd.merge(headsign_shapes, shapes_full, on="shape_id")
 headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
 headsign_shapes.crs = "EPSG:4326"
-headsign_shapes = headsign_shapes.to_crs("EPSG:3424")
+headsign_shapes = headsign_shapes.to_crs(NJ_equidistant)
 # dissolve on headsign
 headsign_shapes_dissolved = headsign_shapes.dissolve(by="trip_headsign").reset_index()
 
@@ -393,8 +469,8 @@ if export_maps == 1:
 buspositions = buspositions.merge(headsign_shapes_dissolved_bydirection[["geometry", "trip_headsign", "shape_id", "direction_id"]].rename(columns={"trip_headsign": "headsign"}), on="headsign", how="left") # try to merge in the line shapes (had hoped to avoid doing for memory reasons, but may be the simplest way)
 buspositions = buspositions.rename(columns={"geometry_x": "point_original", "geometry_y": "route_shape"}) # distinguish new geometry columns from each other
 # the CRS comes undone after the last two operations, so I'm not sure what it uses for the next few, which would seem to require one
-buspositions = gpd.GeoDataFrame(buspositions, crs="EPSG:3424", geometry="point_original")
-#buspositions[["route_shape", "point_original"]] = buspositions[["route_shape", "point_original"]].apply(lambda col: gpd.GeoSeries(col).set_crs("EPSG:3424"))
+buspositions = gpd.GeoDataFrame(buspositions, crs=NJ_equidistant, geometry="point_original")
+#buspositions[["route_shape", "point_original"]] = buspositions[["route_shape", "point_original"]].apply(lambda col: gpd.GeoSeries(col).set_crs(NJ_equidistant))
 buspositions["point_interpolated"] = buspositions.apply(lambda row: row.route_shape.interpolate(row.route_shape.project(row.point_original)), axis=1)
 # geometry columns already projected to ESPG 3424 (NJ state plane with units of ft) for distance calculations: https://www.spatialreference.org/ref/epsg/3424/
 buspositions["distance_traveled_cumul"] = buspositions.apply(lambda row: row.route_shape.project(row.point_interpolated, normalized=False), axis=1) # gotta be a way to do this in one call to .apply(), create a series or something
@@ -403,7 +479,7 @@ buspositions["distance_traveled_cumul"] = buspositions.apply(lambda row: row.rou
 # wait, no, the normalized argument is false by default, so this should be in feet...
 # that the vast majority of measurements are 1 or below makes me think this is normalized, whatever the default arg is supposed to be
 # goddammit, run again with normalized=False explicitly stated
-buspositions = gpd.GeoDataFrame(buspositions.drop(columns=["route_shape"]), geometry="point_interpolated", crs="EPSG:3424")
+buspositions = gpd.GeoDataFrame(buspositions.drop(columns=["route_shape"]), geometry="point_interpolated", crs=NJ_equidistant)
 
 
 #%% calculate distance covered between measurements
@@ -528,11 +604,11 @@ blockgroups_merged = blockgroups.merge(acs_blockgroups, on="gisjoin")
 # declare buffer size 
 buffersize = 402.336 # 1/4 mile in meters
 # create headsign shapes with bufffer 
-buffer = headsign_shapes_dissolved_bydirection.to_crs("EPSG:5070").geometry.buffer(buffersize)
+buffer = headsign_shapes_dissolved_bydirection.to_crs(equal_area).geometry.buffer(buffersize)
 headsign_shapes_dissolved_bydirection["buffer"] = buffer
 
 # join block groups that intersect the headsign shape buffers
-blockgroups_headsigns_joined = gpd.sjoin(headsign_shapes_dissolved_bydirection.set_geometry("buffer").to_crs("EPSG:5070"), blockgroups_merged.to_crs("EPSG:5070"), op="intersects", how="left")
+blockgroups_headsigns_joined = gpd.sjoin(headsign_shapes_dissolved_bydirection.set_geometry("buffer").to_crs(equal_area), blockgroups_merged.to_crs(equal_area), op="intersects", how="left")
 
 # %% calculate equity measures
 
@@ -656,7 +732,7 @@ blockgroups_merged["equity_block_group"] = False
 blockgroups_merged.loc[blockgroups_merged.prop_poc > service_area_poc_prop, "equity_block_group"] = True
 # redesignate geometry and reproject to equidistant projection for distance measurements
 # need to calculate a new intersection using only the line shapes, not their buffer
-blockgroups_routes_joined_line = gpd.sjoin(headsign_shapes_dissolved_bydirection.to_crs("EPSG:3424"), blockgroups_merged.to_crs("EPSG:3424"), op="intersects", how="left")
+blockgroups_routes_joined_line = gpd.sjoin(headsign_shapes_dissolved_bydirection.to_crs(NJ_equidistant), blockgroups_merged.to_crs(NJ_equidistant), op="intersects", how="left")
 # find ratio of route length within equity block groups to route length outside of equity block groups
 # for each route, dissolve on equity_block_group field, then calculate length
 blockgroups_routes_joined_line = blockgroups_routes_joined_line.dissolve(by=["route_short_name", "equity_block_group"]) # maybe add as_index=False if don't want groupby fields to be new index

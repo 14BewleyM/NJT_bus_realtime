@@ -202,3 +202,212 @@ INFO:root:Logging started at 2021-04-16 14:35:06.015373
 INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/data_deduped.csv
 INFO:root:Logging started at 2021-04-16 14:35:41.403867
 INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/data_deduped.csv
+INFO:root:Logging started at 2021-04-16 14:42:01.841051
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/data_deduped.csv
+INFO:root:Logging started at 2021-04-16 14:45:30.905911
+INFO:root:Reading in data from C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/data_deduped.csv
+INFO:sqlalchemy.engine.Engine:select version()
+INFO:sqlalchemy.engine.Engine:[raw sql] {}
+INFO:sqlalchemy.engine.Engine:select current_schema()
+INFO:sqlalchemy.engine.Engine:[raw sql] {}
+INFO:sqlalchemy.engine.Engine:show standard_conforming_strings
+INFO:sqlalchemy.engine.Engine:[raw sql] {}
+INFO:sqlalchemy.engine.Engine:
+            SELECT c.oid
+            FROM pg_catalog.pg_class c
+            LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+            WHERE (pg_catalog.pg_table_is_visible(c.oid))
+            AND c.relname = %(table_name)s AND c.relkind in
+            ('r', 'v', 'm', 'f', 'p')
+        
+INFO:sqlalchemy.engine.Engine:[generated in 0.00188s] {'table_name': 'buspositions'}
+INFO:sqlalchemy.engine.Engine:
+            SELECT a.attname,
+              pg_catalog.format_type(a.atttypid, a.atttypmod),
+              (
+                SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid)
+                FROM pg_catalog.pg_attrdef d
+                WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum
+                AND a.atthasdef
+              ) AS DEFAULT,
+              a.attnotnull,
+              a.attrelid as table_oid,
+              pgd.description as comment,
+              a.attgenerated as generated,
+                              (SELECT json_build_object(
+                    'always', a.attidentity = 'a',
+                    'start', s.seqstart,
+                    'increment', s.seqincrement,
+                    'minvalue', s.seqmin,
+                    'maxvalue', s.seqmax,
+                    'cache', s.seqcache,
+                    'cycle', s.seqcycle)
+                FROM pg_catalog.pg_sequence s
+                JOIN pg_catalog.pg_class c on s.seqrelid = c."oid"
+                WHERE c.relkind = 'S'
+                AND a.attidentity != ''
+                AND s.seqrelid = pg_catalog.pg_get_serial_sequence(
+                    a.attrelid::regclass::text, a.attname
+                )::regclass::oid
+                ) as identity_options                
+            FROM pg_catalog.pg_attribute a
+            LEFT JOIN pg_catalog.pg_description pgd ON (
+                pgd.objoid = a.attrelid AND pgd.objsubid = a.attnum)
+            WHERE a.attrelid = %(table_oid)s
+            AND a.attnum > 0 AND NOT a.attisdropped
+            ORDER BY a.attnum
+        
+INFO:sqlalchemy.engine.Engine:[generated in 0.00133s] {'table_oid': 20388}
+INFO:sqlalchemy.engine.Engine:
+            SELECT t.typname as "name",
+               pg_catalog.format_type(t.typbasetype, t.typtypmod) as "attype",
+               not t.typnotnull as "nullable",
+               t.typdefault as "default",
+               pg_catalog.pg_type_is_visible(t.oid) as "visible",
+               n.nspname as "schema"
+            FROM pg_catalog.pg_type t
+               LEFT JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+            WHERE t.typtype = 'd'
+        
+INFO:sqlalchemy.engine.Engine:[generated in 0.00128s] {}
+INFO:sqlalchemy.engine.Engine:
+            SELECT t.typname as "name",
+               -- no enum defaults in 8.4 at least
+               -- t.typdefault as "default",
+               pg_catalog.pg_type_is_visible(t.oid) as "visible",
+               n.nspname as "schema",
+               e.enumlabel as "label"
+            FROM pg_catalog.pg_type t
+                 LEFT JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+                 LEFT JOIN pg_catalog.pg_enum e ON t.oid = e.enumtypid
+            WHERE t.typtype = 'e'
+        ORDER BY "schema", "name", e.oid
+INFO:sqlalchemy.engine.Engine:[generated in 0.00149s] {}
+INFO:sqlalchemy.engine.Engine:
+                SELECT a.attname
+                FROM pg_attribute a JOIN (
+                    SELECT unnest(ix.indkey) attnum,
+                           generate_subscripts(ix.indkey, 1) ord
+                    FROM pg_index ix
+                    WHERE ix.indrelid = %(table_oid)s AND ix.indisprimary
+                    ) k ON a.attnum=k.attnum
+                WHERE a.attrelid = %(table_oid)s
+                ORDER BY k.ord
+            
+INFO:sqlalchemy.engine.Engine:[generated in 0.00136s] {'table_oid': 20388}
+INFO:sqlalchemy.engine.Engine:
+        SELECT conname
+           FROM  pg_catalog.pg_constraint r
+           WHERE r.conrelid = %(table_oid)s AND r.contype = 'p'
+           ORDER BY 1
+        
+INFO:sqlalchemy.engine.Engine:[generated in 0.00117s] {'table_oid': 20388}
+INFO:sqlalchemy.engine.Engine:
+          SELECT r.conname,
+                pg_catalog.pg_get_constraintdef(r.oid, true) as condef,
+                n.nspname as conschema
+          FROM  pg_catalog.pg_constraint r,
+                pg_namespace n,
+                pg_class c
+
+          WHERE r.conrelid = %(table)s AND
+                r.contype = 'f' AND
+                c.oid = confrelid AND
+                n.oid = c.relnamespace
+          ORDER BY 1
+        
+INFO:sqlalchemy.engine.Engine:[generated in 0.00139s] {'table': 20388}
+INFO:sqlalchemy.engine.Engine:
+              SELECT
+                  i.relname as relname,
+                  ix.indisunique, ix.indexprs,
+                  a.attname, a.attnum, c.conrelid, ix.indkey::varchar,
+                  ix.indoption::varchar, i.reloptions, am.amname,
+                  pg_get_expr(ix.indpred, ix.indrelid),
+                  ix.indnkeyatts as indnkeyatts
+              FROM
+                  pg_class t
+                        join pg_index ix on t.oid = ix.indrelid
+                        join pg_class i on i.oid = ix.indexrelid
+                        left outer join
+                            pg_attribute a
+                            on t.oid = a.attrelid and a.attnum = ANY(ix.indkey)
+                        left outer join
+                            pg_constraint c
+                            on (ix.indrelid = c.conrelid and
+                                ix.indexrelid = c.conindid and
+                                c.contype in ('p', 'u', 'x'))
+                        left outer join
+                            pg_am am
+                            on i.relam = am.oid
+              WHERE
+                  t.relkind IN ('r', 'v', 'f', 'm', 'p')
+                  and t.oid = %(table_oid)s
+                  and ix.indisprimary = 'f'
+              ORDER BY
+                  t.relname,
+                  i.relname
+            
+INFO:sqlalchemy.engine.Engine:[generated in 0.00181s] {'table_oid': 20388}
+INFO:sqlalchemy.engine.Engine:
+            SELECT
+                cons.conname as name,
+                cons.conkey as key,
+                a.attnum as col_num,
+                a.attname as col_name
+            FROM
+                pg_catalog.pg_constraint cons
+                join pg_attribute a
+                  on cons.conrelid = a.attrelid AND
+                    a.attnum = ANY(cons.conkey)
+            WHERE
+                cons.conrelid = %(table_oid)s AND
+                cons.contype = 'u'
+        
+INFO:sqlalchemy.engine.Engine:[generated in 0.00187s] {'table_oid': 20388}
+INFO:sqlalchemy.engine.Engine:
+            SELECT
+                cons.conname as name,
+                pg_get_constraintdef(cons.oid) as src
+            FROM
+                pg_catalog.pg_constraint cons
+            WHERE
+                cons.conrelid = %(table_oid)s AND
+                cons.contype = 'c'
+        
+INFO:sqlalchemy.engine.Engine:[generated in 0.00132s] {'table_oid': 20388}
+INFO:sqlalchemy.engine.Engine:
+            SELECT
+                pgd.description as table_comment
+            FROM
+                pg_catalog.pg_description pgd
+            WHERE
+                pgd.objsubid = 0 AND
+                pgd.objoid = %(table_oid)s
+        
+INFO:sqlalchemy.engine.Engine:[generated in 0.00180s] {'table_oid': 20388}
+INFO:sqlalchemy.engine.Engine:SELECT count(*) FROM buspositions
+INFO:sqlalchemy.engine.Engine:[raw sql] {}
+INFO:sqlalchemy.engine.Engine:SELECT count(*) FROM buspositions
+INFO:sqlalchemy.engine.Engine:[raw sql] {}
+INFO:sqlalchemy.engine.Engine:SELECT count(*) FROM buspositions;
+INFO:sqlalchemy.engine.Engine:[generated in 0.00150s] {}
+INFO:sqlalchemy.engine.Engine:SELECT count(*) FROM buspositions;
+INFO:sqlalchemy.engine.Engine:[cached since 123.4s ago] {}
+INFO:sqlalchemy.engine.Engine:SELECT count(*) FROM buspositions;
+INFO:sqlalchemy.engine.Engine:[cached since 191.1s ago] {}
+INFO:sqlalchemy.engine.Engine:SELECT count(*) FROM buspositions;
+INFO:sqlalchemy.engine.Engine:[cached since 220s ago] {}
+INFO:sqlalchemy.engine.Engine:SELECT DISTINCT ON (month, day, run_number, vehicle_id, geometry)                                                 FROM buspositions                                                 WHERE has_service=True                                                 ORDER BY timestamp ASC
+INFO:sqlalchemy.engine.Engine:[generated in 0.00167s] {}
+INFO:sqlalchemy.engine.Engine:ROLLBACK
+INFO:sqlalchemy.engine.Engine:SELECT DISTINCT ON (month, day, run_number, vehicle_id, geometry) *                                                 FROM buspositions                                                 WHERE has_service=True                                                 ORDER BY timestamp ASC;
+INFO:sqlalchemy.engine.Engine:[generated in 0.00156s] {}
+INFO:sqlalchemy.engine.Engine:ROLLBACK
+INFO:sqlalchemy.engine.Engine:SELECT * FROM buspositions b                                 WHERE NOT EXISTS(                                     SELECT FROM buspositions b1                                     WHERE b.run_number = b1.run_number                                     AND b.vehicle_id = b1.vehicle_id                                     AND b.geometry = b1.geometry                                     AND date_trunc('day', b.timestamp)::date = date_trunc('day', b1.timestamp)::date                                     AND b.id <> b1.id                                     )
+INFO:sqlalchemy.engine.Engine:[raw sql] {}
+INFO:sqlalchemy.engine.Engine:ROLLBACK
+INFO:sqlalchemy.engine.Engine:SELECT * FROM buspositions b                                 WHERE NOT EXISTS(                                     SELECT FROM buspositions b1                                     WHERE b.run_number = b1.run_number                                     AND b.vehicle_id = b1.vehicle_id                                     AND b.lon = b1.lon                                     AND b.lat = b1.lat                                     AND date_trunc('day', b.timestamp)::date = date_trunc('day', b1.timestamp)::date                                     AND b.id <> b1.id                                     )
+INFO:sqlalchemy.engine.Engine:[raw sql] {}
+INFO:sqlalchemy.engine.Engine:SELECT * FROM buspositions b                                 WHERE NOT EXISTS(                                     SELECT FROM buspositions b1                                     WHERE b.run_number = b1.run_number                                     AND b.vehicle_id = b1.vehicle_id                                     AND b.lon = b1.lon                                     AND b.lat = b1.lat                                     AND date_trunc('day', b.timestamp)::date = date_trunc('day', b1.timestamp)::date                                     AND b.id <> b1.id                                     AND b.has_service = True                                     )
+INFO:sqlalchemy.engine.Engine:[raw sql] {}
