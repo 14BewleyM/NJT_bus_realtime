@@ -67,20 +67,26 @@ logging.info(f"Reading in data from {data_path}")
 # read in in chunks for big file
 chunk_size = 1.5 *  (10 ** 6) # number of rows to read in at a time (or once, as the case currently is)
 buspositions = pd.DataFrame()
-# trying to read in dataset with sql
-dbname = "buspositions.db"
-db = sqlalchemy.create_engine("sqlite:///" + dbname)
-if not os.path.exists(dbname): # if db doesn't exist then create one
-    indexvalue = 0 # iterator for setting dataframe index
-    for df in pd.read_csv(data_path, chunksize=chunk_size, iterator=True):
-        df.index += indexvalue
+# trying dedupe dataset with sql before reading in, to reduce size 
+# create connection to postgresql database with full dataset
+# create engine
+with open("database_pass.txt", "r") as file:
+    lines = file.readlines()
+    database_pass = lines[0]
+engine = sqlalchemy.create_engine(f"postgresql://postgres:{database_pass}@localhost:5432/bustest", echo=True)
+# create session
+Session = sqlalchemy.orm.sessionmaker(bind=engine)
+session = Session()
 
-        df.to_sql("buspositions", db, if_exists="append")
-        indexvalue = df.index[-1] + 1
+# identify busposition table, as per: https://stackoverflow.com/questions/30785892/simple-select-statement-on-existing-table-with-sqlalchemy
+metadata = sqlalchemy.MetaData(bind=None)
+buspositions = sqlalchemy.Table("buspositions",
+                                metadata,
+                                autoload=True,
+                                autoload_with=engine
+                                )
 
-        print(f"Loaded rows up to index {indexvalue}")
-
-#buspositions = pd.read_sql_query("SELECT * FROM buspositions WHERE has_service=True", db)
+testdf = pd.read_sql_query("SELECT * FROM buspositions WHERE has_service=True", db)
 
 cols = ["timestamp","vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat"]
 with pd.read_csv(data_path, chunksize=chunk_size) as reader:
