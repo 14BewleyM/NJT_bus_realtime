@@ -4,3 +4,5 @@
 *.txt
 dedupe_sql.py
 *.jl
+*.db
+*.db-journal
