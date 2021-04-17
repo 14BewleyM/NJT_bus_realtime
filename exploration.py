@@ -12,10 +12,9 @@
 # https://www.earthdatascience.org/tags/time-series/
 
 # managing memory with chunking: https://towardsdatascience.com/loading-large-datasets-in-pandas-11bdddd36f7b
+# incorporating multiprocessing: https://stackoverflow.com/questions/41240067/pandas-and-multiprocessing-memory-management-splitting-a-dataframe-into-multipl
 
-# %% TODO
-# use resample to select measurements every minute or so: https://pandas.pydata.org/docs/reference/api/pandas.DataFrame.resample.html
-# also here: https://towardsdatascience.com/using-the-pandas-resample-function-a231144194c4
+# %% to do
 
 # CTA uses the same vendor for their bus tracker! and they have an API even!!: https://www.transitchicago.com/developers/bustracker/
 # found via github of Neil Freeman, who created an archiver for the API: https://github.com/fitnr/cta-bus-archive
@@ -44,24 +43,35 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from geoalchemy2 import Geometry
 
-# %% some initial settings
-generate_maps = 0
-
 # setting some important directories and filepaths
 main_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper"
 code_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/code"
 gtfs_directory = "C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs"
-data_path = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/data_deduped.csv"
-data_path_bigger = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata_bigger.csv"
-data_path_smaller = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/testdata.csv"
+data_directory = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/data"
+data_path = data_directory + "/data_deduped.csv"
+data_path_bigger = data_directory + "/testdata_bigger.csv"
+data_path_smaller = data_directory + "/testdata.csv"
 data_path_tract = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_tract.csv"
 data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_blck_grp.csv"
 boundary_path_tract = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_tracts/US_tract_2019.shp"
 boundary_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups/NJ_blck_grp_2019.shp"
 
+# %% some initial settings
+generate_maps = 0
+if os.path.exists(data_directory + "/buspositions_deduped.csv"):
+    print("Existing deduped csv file detected and will be read in")
+    try_sql = 0
+else:
+    try_sql = 1
+read_in_pandas = 0
+export_bus_positions = 1
+export_route_shapes = 0
+generate_folium_maps = 0
+
 # projections
 NJ_equidistant = "EPSG:3424"
 equal_area = "EPSG:5070"
+original_projection = "EPSG:4326"
 
 # %% set up logging
 logging.basicConfig(filename="log.log", 
@@ -75,8 +85,7 @@ logging.info(f"Reading in data from {data_path}")
 chunk_size = 1.5 *  (10 ** 6) # number of rows to read in at a time (or once, as the case currently is)
 buspositions = pd.DataFrame()
 
-try_sql = 0
-if try_sql==1:
+if try_sql == 1:
     # trying to dedupe dataset with sql before reading in, to reduce size 
     DeclarativeBase = declarative_base()
 
@@ -118,14 +127,7 @@ if try_sql==1:
                                     )
     # sqlalchemy tutorial on querying: https://docs.sqlalchemy.org/en/14/orm/tutorial.html#querying
     # a more helpful sqlalchemy tutorial: https://hackersandslackers.com/database-queries-sqlalchemy-orm/
-    # example:
-    testquery = session.query(Busposition).order_by(Busposition.timestamp) # query for all bus positions ordered by timestamp
-    for busposition in testquery:
-        print(busposition.timestamp) # print all the timestamps (takes forever bc ofc)
 
-    # count rows
-    test_result = engine.execute(sqlalchemy.text("SELECT count(*) FROM buspositions;")).fetchall()
-    row_count= test_result[0][0]
     # select distinct rows (rows that probably aren't duplicated observations)
     # based on this method: https://stackoverflow.com/questions/54418/how-do-i-or-can-i-select-distinct-on-multiple-columns
     sql = "SELECT * FROM buspositions b \
@@ -157,11 +159,10 @@ if try_sql==1:
     print(f"Converting dataframe to geodataframe and converting to equidistant projection")
     buspositions = gpd.GeoDataFrame(buspositions, 
                         geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
-    buspositions.crs = "EPSG:4326"
+    buspositions.crs = original_projection
     buspositions = buspositions.to_crs(NJ_equidistant)
 
-read_in_pandas = 0
-if read_in_pandas == 1:
+elif read_in_pandas == 1:
     # read in with pandas
     cols = ["timestamp","vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat"]
     with pd.read_csv(data_path, chunksize=chunk_size) as reader:
@@ -171,7 +172,7 @@ if read_in_pandas == 1:
 
             chunk = gpd.GeoDataFrame(chunk, 
                                 geometry=gpd.points_from_xy(chunk.lon, chunk.lat))
-            chunk.crs = "EPSG:4326"
+            chunk.crs = original_projection
 
             # set timestamp column to be datetime and add day and month columns   
             chunk.timestamp = pd.to_datetime(chunk.timestamp)
@@ -195,12 +196,12 @@ if read_in_pandas == 1:
 
             # check for duplicates by month, day, run number, vehicle id, and geometry
             # records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
-            duplicate_count = chunk.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
+            duplicate_count = chunk.duplicated(subset=["date", "run_number", "vehicle_id", "geometry"], keep="first").sum()
             print(f"Chunk {iterator}: There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
 
             # drop all except first duplicate for each vehicle
             print(f"Chunk {iterator}: Dropping {duplicate_count} duplicates")
-            chunk = chunk.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
+            chunk = chunk.drop_duplicates(subset=["date", "run_number", "vehicle_id", "geometry"], keep="first")
             buspositions = buspositions.append(chunk)
             print(f"Chunk {iterator}: Dataset has {buspositions.shape[0]} records after dropping") # when run all together, this prints a value different from the actual final row count...
 
@@ -211,7 +212,7 @@ if read_in_pandas == 1:
 
     buspositions = gpd.GeoDataFrame(buspositions, 
                         geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
-    buspositions.crs = "EPSG:4326"
+    buspositions.crs = original_projection
     buspositions = buspositions.to_crs(NJ_equidistant)
     print(f"Initial dataset has {buspositions.shape[0]} records")
 
@@ -236,88 +237,51 @@ if read_in_pandas == 1:
 
     # check for duplicates by month, day, run number, vehicle id, and geometry
     # records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
-    duplicate_count = buspositions.duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first").sum()
+    duplicate_count = buspositions.duplicated(subset=["date", "run_number", "vehicle_id", "geometry"], keep="first").sum()
     print(f"There are {duplicate_count} observations with duplicate days, run numbers, vehicle ids, and geometries")
 
     # drop all except first duplicate for each vehicle
     print(f"Dropping {duplicate_count} duplicates")
     #buspositions = buspositions[~buspositions.sort_values(by="timestamp").duplicated(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")]
-    buspositions = buspositions.drop_duplicates(subset=["month", "day", "run_number", "vehicle_id", "geometry"], keep="first")
+    buspositions = buspositions.drop_duplicates(subset=["date", "run_number", "vehicle_id", "geometry"], keep="first")
     print(f"Final dataset has {buspositions.shape[0]} records")
+
+else: # if not reading in with sql or anew with pandas, read in from existing csv
+    print("Exporting deduped buspositions csv")
+    buspositions = pd.read_csv(data_directory + "/buspositions_deduped.csv")
 
 # create time elapsed column
 print(f"Creating elapsed time column")
-buspositions["time_elapsed"] = buspositions.sort_values(by=["timestamp", "vehicle_id", "run_number"]).groupby(by=["month", "day", "vehicle_id", "run_number"])["timestamp"].diff().fillna(pd.Timedelta(seconds=0))
+buspositions["time_elapsed"] = buspositions.sort_values(by=["timestamp", "vehicle_id", "run_number"]).groupby(by=["date", "vehicle_id", "run_number"])["timestamp"].diff().fillna(pd.Timedelta(seconds=0))
 # testing for negative times
 negative_times = (buspositions.time_elapsed < datetime.timedelta(0)).sum()
 print(f"{negative_times} records calculated with negative elapsed time")
 # create timedelta columns in seconds
 buspositions["time_elapsed_seconds"] = buspositions.time_elapsed.apply(pd.Timedelta.total_seconds)
 
-export_bus_positions = 1
-if export_bus_positions == 0:
+if export_bus_positions == 1:
     # drop timedelta column (bc can only be exported to geopackage as seconds, not as timedelta type)
-    os.chdir(main_directory)
-    buspositions.drop(columns="time_elapsed").to_file("buspositions_cleaned.gpkg", driver="GPKG")
+    os.chdir(data_directory)
+    if not os.path.exists(data_directory + "/buspositions_cleaned.gpkg"):
+        buspositions.drop(columns="time_elapsed").astype({"date": str}).to_file("buspositions_cleaned.gpkg", driver="GPKG")
+    if not os.path.exists(data_directory + "/buspositions_deduped.csv"):
+        buspositions.to_csv("buspositions_deduped.csv")
     os.chdir(code_directory)
 
-# %% load gtfs (including route shapes)
-routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
+# %% load gtfs (including route shapes) and construct dataframes of headsigns from both datasets
+# routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
+routes = gtfs.import_gtfs(gtfs_directory)[0]
 # segments_gdf = gtfs.cut_gtfs(stop_times, stops, shapes)
 
-# trying to determine whether there are different route shapes for each route
-trips.groupby(trips.route_id).shape_id.unique()
-# counting them up for each route
-trips.groupby(trips.route_id).shape_id.unique().apply(len)
+# function to replace within each item in a list
+# so that you can apply a it to a whole series of lists
+def replace_in_list(patt, repl, list):
+    newlist = []
+    for element in list: 
+        newlist.append(re.sub(patt, repl, element))
+        #list[element] = element
+    return newlist
 
-# the line frequency function produces a gdf with geometries for every stopping pattern, I think
-line_freq = gtfs.lines_freq(stop_times=stop_times, trips=trips, shapes=shapes, routes=routes)
-line_freq.crs = {"init": "epsg:4326"}
-
-# map route shapes
-if generate_maps==1:
-    m = folium.Map(location=[40.733260, -74.164128], tiles="Stamen Toner")
-    geojson = line_freq[line_freq.route_id=="1"].to_json()
-    #folium.Choropleth( 
-    #   geojson,
-    #  line_weight=3,
-    # line_color="blue").add_to(m)
-    #folium.Choropleth(
-    #   line_freq[line_freq.route_id=="1"],
-    #  line_weight=3,
-    # line_color="blue").add_to(m)
-    # for adding interactive features: https://vverde.github.io/blob/interactivechoropleth.html
-    # compare with code starting around line 1240 here, in gtfs_functions implementation: https://github.com/Bondify/gtfs_functions/blob/master/gtfs_functions/gtfs_funtions.py
-    lines = folium.features.GeoJson(
-        geojson,
-        tooltip = folium.features.GeoJsonTooltip(
-            fields = ['route_name']))
-    m.add_child(lines)
-    # consider folium.features.ColorLine() too
-
-    # save and open html map in browser for viewing
-    m.save("map.html")
-    webbrowser.open_new("map.html")
-
-# merge trips with shapes and then dissolve on route
-shapes_routeids = trips.groupby(by="shape_id")[["route_id"]].max().reset_index()
-route_shapes = pd.merge(left=shapes_routeids, right=shapes[["shape_id", "geometry"]], on="shape_id", how="left")  
-route_shapes = pd.merge(left=route_shapes, right=routes[["route_id", "route_name"]], on="route_id", how="left")
-route_shapes = gpd.GeoDataFrame(route_shapes, geometry="geometry")
-lines_dissolved = route_shapes.dissolve(by="route_name").reset_index()
-# make new map with pared down route shapes
-if generate_maps==1:
-    m = folium.Map(location=[40.733260, -74.164128], tiles="Stamen Toner")
-    geojson = lines_dissolved.to_json()
-    lines = folium.features.GeoJson(
-        geojson,
-        tooltip = folium.features.GeoJsonTooltip(
-            fields = ['route_name']))
-    m.add_child(lines)
-    m.save("map.html")
-    webbrowser.open_new("map.html")
-
-# %% comparing returned headsigns with GTFS headsigns
 # if they have headsigns in common, it'll be much easier to make the vehicle positions to GTFS service patterns
 trips_full = pd.read_csv("C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs/trips.txt")
 trips_full = trips_full.astype(str)
@@ -326,13 +290,15 @@ trips_full = pd.merge(trips_full, routes[["route_id", "route_short_name"]], on="
 # number of unique headsigns per route from gtfs given by:
 unique_headsigns_gtfs = trips_full.groupby(by=["route_short_name"])["trip_headsign"].unique().apply(len).reset_index().sort_values(by="route_short_name").rename(columns={"trip_headsign": "headsign_count"})
 unique_headsigns_gtfs["headsigns"] = trips_full.groupby(by=["route_short_name"])["trip_headsign"].unique().reset_index()["trip_headsign"] # column to hold lists of headsigns
+unique_headsigns_gtfs.headsigns = unique_headsigns_gtfs.headsigns.apply(lambda x: replace_in_list("  ", " ", x)) # replace double spaces with single spaces
 trips_full.groupby(by="route_id")["trip_headsign"].unique().apply(len).sum() # total
 # by direction and headsign
 trips_full.groupby(by=["direction_id", "trip_headsign"]).size().reset_index().rename(columns={0:"count"})
 
 # headsigns from vehicle measurements
 unique_headsigns_buspositions = buspositions.groupby(by="route_number")["headsign"].unique().apply(len).reset_index().sort_values(by="route_number").rename(columns={"headsign": "headsign_count"})
-unique_headsigns_buspositions["headsigns"] = buspositions.groupby(by=["route_number"])["headsign"].unique().reset_index()["headsign"] 
+unique_headsigns_buspositions["headsigns"] = buspositions.groupby(by=["route_number"])["headsign"].unique().reset_index()["headsign"]
+unique_headsigns_buspositions.headsigns = unique_headsigns_buspositions.headsigns.apply(lambda x: replace_in_list("  ", " ", x)) # replace double spaces with single spaces
 
 # compare routes from gtfs with routes from vehicle measurements
 # concerned there may be some route numbers returned in vehicle measurements that don't exist in gtfs as short names
@@ -348,18 +314,42 @@ buspositions = buspositions[~buspositions.route_number.isin(route_diff_buspos_gt
 unique_headsigns_buspositions = unique_headsigns_buspositions[~unique_headsigns_buspositions.route_number.isin(route_diff_buspos_gtfs)]
 # drop routes not present in GTFS, and strip variants of "-Exact fare" as well as trailing and leading spaces
 unique_headsigns_gtfs = unique_headsigns_gtfs[unique_headsigns_gtfs.route_short_name.isin(unique_headsigns_buspositions.route_number.unique())]
-def split_in_list(patt, repl, list):
-    newlist = []
-    for element in list: 
-        newlist.append(re.sub(patt, repl, element))
-        #list[element] = element
-    return newlist
-unique_headsigns_gtfs["headsigns"] = unique_headsigns_gtfs["headsigns"].apply(lambda x: split_in_list(r"[ ]*-[ ]*[Ee]x.*", "", x))
+
+unique_headsigns_gtfs["headsigns"] = unique_headsigns_gtfs["headsigns"].apply(lambda x: replace_in_list(r"[ ]*-[ ]*[Ee][x].*", "", x))
 # new dataframe merging headsigns etc from both datasets
 unique_headsigns_buspositions = unique_headsigns_buspositions.rename(columns={"route_number": "route_short_name"})
 headsigns_merged = pd.merge(unique_headsigns_buspositions, unique_headsigns_gtfs, on="route_short_name", suffixes=("_buspositions", "_gtfs"))
 
-# compare busposition and gtfs headsigns
+
+# %% check for headsign crosswalk and if exists use it to replace headsigns in both datasets
+
+# create dataframe where each row is a headsign (rather than a list of headsigns)
+headsigns_split_gtfs = trips_full[["trip_headsign", "route_short_name"]].drop_duplicates(subset=["trip_headsign", "route_short_name"]).rename(columns={"trip_headsign":"headsign"})
+headsigns_split_gtfs.headsign = headsigns_split_gtfs.headsign.str.replace("  ", " ")
+headsigns_split_gtfs.headsign = headsigns_split_gtfs.headsign.str.replace(r"[ ]*-[ ]*[Ee][x].*", "", regex=True)
+
+headsigns_split_buspositions = buspositions[["headsign", "route_number"]].drop_duplicates(subset=["headsign", "route_number"]).rename(columns={"route_number": "route_short_name"})
+headsigns_split_buspositions.headsign = headsigns_split_buspositions.headsign.str.replace("  ", " ")
+headsigns_split_buspositions.headsign = headsigns_split_buspositions.headsign.str.replace(r"[ ]*-[ ]*[Ee][x].*", "", regex=True)
+
+# merge them to find which headsigns match and which don't
+headsigns_split_merged = headsigns_split_buspositions.merge(headsigns_split_gtfs, how="outer", on="headsign", suffixes=("_buspositions", "_gtfs")).sort_values(by="headsign")
+# pre-populate crosswalk field if the headsigns match
+headsigns_split_merged["headsign_crosswalk"] = headsigns_split_merged[(headsigns_split_merged.route_short_name_buspositions.notna()) & (headsigns_split_merged.route_short_name_gtfs.notna())].headsign
+headsigns_split_merged.to_excel(data_directory + "/headsigns_merged.xlsx")
+# manually create the rest of the crosswalk values
+# basically, copy matching values from the gtfs to buspositions, so that the busposition headsigns can be matched to the gtfs route shapes
+
+#for index, row in unique_headsigns_gtfs.iterrows():
+ #   temp_list.append(list(pd.Series(row.headsigns)))
+  #  print(f"Appending series of headsigns for route {row.route_short_name}")
+    #headsigns_split_gtfs.headsigns = headsigns_split_gtfs.headsigns.append(temp_series, ignore_index=True)
+#headsigns_split_gtfs.headsigns = headsigns_split_gtfs.headsigns.append(pd.Series(temp_list))
+#unique_headsigns_gtfs.apply(lambda x: pd.Series(x.headsigns))
+#pd.Series(unique_headsigns_buspositions.headsigns.to_list()[0])
+
+
+# %% compare busposition and gtfs headsigns
 # headsigns_merged.headsigns_buspositions.compare(headsigns_merged.headsigns_gtfs)
 def intersect_pandas_series(left_series, right_series):
     """
@@ -398,12 +388,6 @@ headsign_shapes[["direction_id", "shape_id"]] = headsign_shapes[["direction_id",
 # maybe (hopefully) these are just different parts of what is basically a single shape
 # in that case, can just merge them to create one shape per headsign (assuming each headsign corresponds to only one direction)
 
-# comparing shape ids to see if they all match up
-len(set(headsign_shapes.shape_id.unique()) - set(shapes.shape_id.unique()))
-len(set(headsign_shapes.shape_id.unique()) - set(trips.shape_id.unique()))
-len(set(headsign_shapes.shape_id.unique()) - set(trips_full.shape_id.unique()))
-# for some reason, there seem to be trip ids in the full trips csv that aren't present in the dfs produced by gtfs_functions
-
 # just construct the shapes yourself, see here for basic procedure: https://www.stevencanplan.com/2016/02/converting-a-transit-agencys-gtfs-to-shapefile-and-geojson-with-qgis/
 # should be easy enough with geopandas, group by route and create list from points in sequence order, and then LineString: https://stackoverflow.com/questions/51071365/convert-points-to-lines-geopandas
 shapes_full_csv = pd.read_csv("C:/Users/Bewle/OneDrive/Documents/data/geographic/NJT/NJT_bus_gtfs/shapes.txt")
@@ -420,7 +404,7 @@ len(set(headsign_shapes.shape_id.unique()) - set(shapes_full.shape_id.unique()))
 # merge in geometry
 headsign_shapes = pd.merge(headsign_shapes, shapes_full, on="shape_id")
 headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
-headsign_shapes.crs = "EPSG:4326"
+headsign_shapes.crs = original_projection
 headsign_shapes = headsign_shapes.to_crs(NJ_equidistant)
 # dissolve on headsign
 headsign_shapes_dissolved = headsign_shapes.dissolve(by="trip_headsign").reset_index()
@@ -451,8 +435,7 @@ headsign_shapes_dissolved_bydirection = pd.concat([headsign_shapes_dissolved_byd
 # seems to produce the right number of rows
 
 # export to geopackage for visual inspection
-export_maps = 0
-if export_maps == 1:
+if export_route_shapes == 1:
     os.chdir(main_directory)
     headsign_shapes.to_file("headsign_shapes.gpkg", driver="GPKG")
     headsign_shapes_dissolved.to_file("headsign_shapes_dissolved.gpkg", driver="GPKG")
@@ -516,7 +499,7 @@ print(f"{(~vehicles_multiple_runs & ~vehicles_multiple_routes).sum()} vehicles a
 # this will exclude some relevant observations (bc you won't be able to calculate differences and speeds for some rows that become the first in a group)
 # but that's better than having some observations that would be useful but have to be discarded bc of very high speeds, and not in a sensible way
 
-buses_sorted_grouped = buspositions.sort_values(by="timestamp").groupby(by=["month", "day", "vehicle_id", "headsign", "run_number"])
+buses_sorted_grouped = buspositions.sort_values(by="timestamp").groupby(by=["date", "vehicle_id", "headsign", "run_number"])
 # reproject into ESPG 3424 (NJ state plane with units of ft) for distance calculations: https://www.spatialreference.org/ref/epsg/3424/
 
 # get distance along line of each observation in group (using .project())
