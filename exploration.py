@@ -56,6 +56,218 @@ data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses
 boundary_path_tract = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_tracts/US_tract_2019.shp"
 boundary_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups/NJ_blck_grp_2019.shp"
 
+# %% initial settings
+# projections
+NJ_equidistant = "EPSG:3424"
+equal_area = "EPSG:5070"
+original_projection = "EPSG:4326"
+
+projections_dict = {"equidistant": NJ_equidistant,
+                    "equal_area": equal_area,
+                    "original_projection": original_projection}
+
+# %% load buspositions data
+def load_buspositions_data(projections, data_path=None, data_directory=None): 
+    # provide data_path if want to read in data from cvs, data_directory if want to export from postgresql to csv
+    # provide projections as a dict of projections containing an original projection, an equal area projection, and an equidistant projection
+    # provide just projections if want to load with postgresql but not export to csv
+    if projections is None:
+        raise TypeError("Must provide a dict of projections containing an original projection, an equal area projection, and an equidistant projection")
+    if data_path is None: # read in data from postgresql database
+        print(f"Reading in data from postgresql database")
+
+        with open("database_pass.txt", "r") as file:
+            lines = file.readlines(0)
+            database_pass = lines[0]
+        
+        engine = sqlalchemy.create_engine(f"postgresql://postgres:{database_pass}@localhost:5432/bustest", echo=True)
+        
+        # identify busposition table, as per: https://stackoverflow.com/questions/30785892/simple-select-statement-on-existing-table-with-sqlalchemy
+        metadata = sqlalchemy.MetaData(bind=None)
+        buspositions = sqlalchemy.Table("buspositions",
+                                        metadata,
+                                        autoload=True,
+                                        autoload_with=engine
+                                        )
+        # sqlalchemy tutorial on querying: https://docs.sqlalchemy.org/en/14/orm/tutorial.html#querying
+        # a more helpful sqlalchemy tutorial: https://hackersandslackers.com/database-queries-sqlalchemy-orm/
+
+        # select distinct rows (rows that probably aren't duplicated observations)
+        # based on this method: https://stackoverflow.com/questions/54418/how-do-i-or-can-i-select-distinct-on-multiple-columns
+        sql = "SELECT * FROM buspositions b \
+                                        WHERE NOT EXISTS( \
+                                            SELECT FROM buspositions b1 \
+                                            WHERE b.run_number = b1.run_number \
+                                            AND b.vehicle_id = b1.vehicle_id \
+                                            AND b.lon = b1.lon \
+                                            AND b.lat = b1.lat \
+                                            AND date_trunc('day', b.timestamp)::date = date_trunc('day', b1.timestamp)::date \
+                                            AND b.headsign = b1.headsign \
+                                            AND b.id <> b1.id \
+                                            AND b.has_service = True \
+                                            )"
+        #distinct_rows = engine.execute(sqlalchemy.text(sql))
+        #print(f"Result after deduping with SQL has {distinct_rows.rowcount} rows")
+        print(f"Reading in and deduplicating dataset from database")
+        buspositions = pd.read_sql_query(sql, engine) # should maybe try to wrap in sqlalchemy.text(), as best practice
+        print(f"Dataset has {buspositions.shape[0]} rows")
+        print("Creating date column")
+        buspositions["date"] = buspositions.timestamp.dt.date
+        print(f"Removing {(buspositions.has_service == False).sum()} rows with no service")
+        buspositions = buspositions[buspositions.has_service==True]
+
+        # some headsigns had ampersand replaced with &amp;amp;
+        # put ampersand back
+        print(f"Replacing ampersands in {buspositions.headsign.str.contains('amp;amp;').sum()} rows that had ampersands replaced with amp;amp;")
+        buspositions.headsign = buspositions.headsign.str.replace("amp;amp;", "")
+
+        if data_directory is not None:
+            print("Exporting buspositions file to csv")
+            buspositions.to_csv(data_directory + "/buspositions_deduped.csv")
+
+        print(f"Converting dataframe to geodataframe and converting to equidistant projection")
+        buspositions = gpd.GeoDataFrame(buspositions, 
+                            geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
+        buspositions.crs = projections_dict["original_projection"]
+        buspositions = buspositions.to_crs(projections_dict["equidistant"])                
+    
+    
+    elif data_path is not None: # read in deduped data from path
+        print(f"Reading in data from {data_path}")
+        chunk_size = 1.5 * (10 ** 6) # number of rows to read in at a time
+
+        cols = ["timestamp","vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat"]
+        buspositions = pd.DataFrame(cols)
+
+        with pd.read_csv(data_path, chunksize=chunk_size) as reader:
+            iterator = 0
+            for chunk in reader:
+                print(f"Chunk {iterator}: Reading in chunk {iterator} with chunk size of {chunk_size} max rows")
+
+                chunk = gpd.GeoDataFrame(chunk, 
+                                    geometry=gpd.points_from_xy(chunk.lon, chunk.lat))
+                chunk.crs = projections_dict["original_projection"]
+
+                # set timestamp column to be datetime and add date column
+                chunk.timestamp = pd.to_datetime(chunk.timestamp)
+                chunk["date"] = chunk.timestamp.dt.date
+
+                # set other data types
+                chunk.vehicle_id = chunk.vehicle_id.astype(str).str.split(".").str[0]
+                chunk.route_number = chunk.route_number.astype(str).str.split(".").str[0]
+                chunk.astype({"run_number": "str", "headsign": "str", "lon": "str", "lat": "str"})
+
+                print(f"Chunk {iterator}: Replacing ampersand in {~chunk.headsign.str.contains('amp;amp;').sum()} rows that have bad formatting")
+                chunk.headsign = chunk.headsign.str.replace("amp;amp;", "")
+
+                # check for weirdly formatted bool and drop observations for routes that returned no service
+                # drop observations for routes that returned no service
+                if chunk.has_service.dtype != bool:
+                    chunk.has_service = chunk.has_service.map({"t":True, "f":False})
+                print(f"Chunk {iterator}: Dropping {chunk.shape[0] - chunk.has_service.sum()} observations from routes with no service")
+                chunk = chunk[chunk.has_service==True]
+
+                # check for duplicates by date, run number, vehicle id, and geometry
+                # records with the same value for all of these probably reflect observations when a vehicle was moving but its position was not updated yet
+                duplicate_count = chunk.duplicated(subset=["date", "run_number", "headsign", "vehicle_id", "geometry"], keep="first").sum()
+                print(f"Chunk {iterator}: There are {duplicate_count} observations with duplicate days, run numbers, headsigns, vehicle ids, and geometries")
+
+                # drop all except first duplicate for each vehicle
+                print(f"Chunk {iterator}: Dropping {duplicate_count} duplicates")
+                chunk = chunk.drop_duplicates(subset=["date", "run_number", "vehicle_id", "geometry"], keep="first")
+                buspositions = buspositions.append(chunk)
+                print(f"Chunk {iterator}: Dataset has {buspositions.shape[0]} records after dropping") # when run all together, this prints a value different from the actual final row count...
+
+                iterator += 1        
+
+    # create time elapsed column
+    print(f"Creating elapsed time column")
+    buspositions["time_elapsed"] = buspositions.sort_values(by=["timestamp", "vehicle_id", "run_number"]).groupby(by=["date", "vehicle_id", "run_number"])["timestamp"].diff().fillna(pd.Timedelta(seconds=0))
+    # testing for negative times
+    negative_times = (buspositions.time_elapsed < datetime.timedelta(0)).sum()
+    print(f"{negative_times} records calculated with negative elapsed time")
+    # create timedelta columns in seconds
+    buspositions["time_elapsed_seconds"] = buspositions.time_elapsed.apply(pd.Timedelta.total_seconds)
+
+    return buspositions
+
+# %% load gtfs
+def load_headsigns(gtfs_directory):
+    # load and headsigns and return a merged dataframe that's the union of headsigns from buspositions and gtfs
+
+    # routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
+    # load routes as dataframe
+    print("Loading routes from gtfs")
+    routes = gtfs.import_gtfs(gtfs_directory)[0]
+
+    # load trips as dataframe
+    print("Loading trips from gtfs")
+    trips = pd.read_csv(gtfs_directory + "/trips.txt").astype(str)
+    trips = pd.merge(trips, routes[["route_id", "route_short_name"]], on="route_id")
+
+    # unique headsigns
+    ## from gtfs
+    print("Creating dataframe of unique headsigns from gtfs")
+    headsigns_gtfs = trips[["trip_headsign", "route_short_name"]].drop_duplicates(subset=["trip_headsign", "route_short_name"]).rename(columns={"trip_headsign": "headsign"})
+    headsigns_gtfs.headsign = headsigns_gtfs.headsign.str.replace("  ", " ")
+    headsigns_gtfs.headsign = headsigns_gtfs.headsign.str.replace(r"[ ]*-[ ]*[Ee][x].*", "", regex=True)
+
+    ## from buspositions
+    print("Creating dataframe of unique headsigns from buspositions")
+    headsigns_buspositions = buspositions[["headsign", "route_number"]].drop_duplicates(subset=["headsign", "route_number"]).rename(columns={"route_number": "route_short_name"})
+    headsigns_buspositions.headsign = headsigns_buspositions.headsign.str.replace("  ", " ")
+    headsigns_buspositions.headsign = headsigns_buspositions.headsign.str.replace(r"[ ]*-[ ]*[Ee][x].*", "", regex=True)
+
+    ## merged
+    print("Merging gtfs and buspositions headsigns")
+    headsigns_merged = headsigns_buspositions.merge(headsigns_gtfs, how="outer", on="headsign", suffixes=("_buspositions", "_gtfs")).sort_values(by="headsign")
+    ### pre-populate crosswalk field if the headsigns match
+    headsigns_merged["headsign_crosswalk"] = headsigns_merged[(headsigns_merged.route_short_name_buspositions.notna()) & (headsigns_merged.route_short_name_gtfs.notna())].headsign
+
+    return headsigns_merged
+
+# %% compare headsigns
+def get_matched_routes(headsigns_merged, buspositions):
+    # rows where headsign_crosswalk is not null are rows where buspositions headsigns can be matched to gtfs headsigns
+    print(f"There are {headsigns_merged.headsign_crosswalk.notna().sum()} matched headsigns")
+    # routes from buspositions all of whose rows have headsign_crosswalk not null are entirely matched
+    print(f"There are {headsigns_merged.groupby(by='route_short_name_buspositions').headsign_crosswalk}")
+    # routes that don't appear in a list of routes with no null values for headsign_crosswalk are routes that are entirely matched
+    matched_routes = headsigns_merged[headsigns_merged.headsign_crosswalk.notna()].route_short_name_buspositions.unique()
+    print(f"There are {matched_routes} routes from buspositions whose headsigns have a matching gtfs headsign shape")
+
+    buspositions_matched = buspositions[buspositions.route_number.isin(matched_routes)]
+    print(f"Returning {buspositions_matched.shape[0]} observations from matched routes of {buspositions.shape[0]} total observations")
+    return buspositions_matched
+
+# %% construct final buspositions dataset
+def create_shapes():
+    
+# including speed and matched headsigns
+
+# %% load Census data
+
+# %% create demographic measures
+
+# %% analysis
+
+# speed by route
+
+# coefficient of variation
+
+# %% figures
+# see the heatmaps and line charts from gtfs_functions readme: https://github.com/Bondify/gtfs_functions
+
+
+
+# %% main routine
+def main():
+    buspositions = load_buspositions_data(data_path=data_path)
+    headsigns_merged = load_headsigns(gtfs_directory)
+    buspositions_matched = get_matched_routes(headsigns_merged, buspositions)
+if __name__ == "__main__":
+    main()
+
 # %% some initial settings
 generate_maps = 0
 if os.path.exists(data_directory + "/buspositions_deduped.csv"):
@@ -68,10 +280,7 @@ export_bus_positions = 1
 export_route_shapes = 0
 generate_folium_maps = 0
 
-# projections
-NJ_equidistant = "EPSG:3424"
-equal_area = "EPSG:5070"
-original_projection = "EPSG:4326"
+
 
 # %% set up logging
 logging.basicConfig(filename="log.log", 
@@ -159,8 +368,8 @@ if try_sql == 1:
     print(f"Converting dataframe to geodataframe and converting to equidistant projection")
     buspositions = gpd.GeoDataFrame(buspositions, 
                         geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
-    buspositions.crs = original_projection
-    buspositions = buspositions.to_crs(NJ_equidistant)
+    buspositions.crs = projections_dict["original_projection"]
+    buspositions = buspositions.to_crs(projections_dict["equidistant"])
 
 elif read_in_pandas == 1:
     # read in with pandas
@@ -172,7 +381,7 @@ elif read_in_pandas == 1:
 
             chunk = gpd.GeoDataFrame(chunk, 
                                 geometry=gpd.points_from_xy(chunk.lon, chunk.lat))
-            chunk.crs = original_projection
+            chunk.crs = projections_dict["original_projection"]
 
             # set timestamp column to be datetime and add day and month columns   
             chunk.timestamp = pd.to_datetime(chunk.timestamp)
@@ -192,6 +401,7 @@ elif read_in_pandas == 1:
 
             # some headsigns had ampersand replaced with &amp;amp;
             # put ampersand back
+            print(f"Chunk {iterator}: Replacing ampersand in {~chunk.headsign.contains('amp;amp;').sum()} rows that have bad formatting")
             chunk.headsign = chunk.headsign.str.replace("amp;amp;", "")
 
             # check for duplicates by month, day, run number, vehicle id, and geometry
@@ -212,8 +422,8 @@ elif read_in_pandas == 1:
 
     buspositions = gpd.GeoDataFrame(buspositions, 
                         geometry=gpd.points_from_xy(buspositions.lon, buspositions.lat))
-    buspositions.crs = original_projection
-    buspositions = buspositions.to_crs(NJ_equidistant)
+    buspositions.crs = projections_dict["original_projection"]
+    buspositions = buspositions.to_crs(projections_dict["equidistant"])
     print(f"Initial dataset has {buspositions.shape[0]} records")
 
     # set timestamp column to be datetime and add day and month columns   
@@ -247,7 +457,7 @@ elif read_in_pandas == 1:
     print(f"Final dataset has {buspositions.shape[0]} records")
 
 else: # if not reading in with sql or anew with pandas, read in from existing csv
-    print("Exporting deduped buspositions csv")
+    print("Reading in deduped buspositions csv")
     buspositions = pd.read_csv(data_directory + "/buspositions_deduped.csv")
 
 # create time elapsed column
@@ -404,8 +614,8 @@ len(set(headsign_shapes.shape_id.unique()) - set(shapes_full.shape_id.unique()))
 # merge in geometry
 headsign_shapes = pd.merge(headsign_shapes, shapes_full, on="shape_id")
 headsign_shapes = gpd.GeoDataFrame(headsign_shapes, geometry="geometry")
-headsign_shapes.crs = original_projection
-headsign_shapes = headsign_shapes.to_crs(NJ_equidistant)
+headsign_shapes.crs = projections_dict["original_projection"]
+headsign_shapes = headsign_shapes.to_crs(projections_dict["equidistant"])
 # dissolve on headsign
 headsign_shapes_dissolved = headsign_shapes.dissolve(by="trip_headsign").reset_index()
 
@@ -452,8 +662,8 @@ if export_route_shapes == 1:
 buspositions = buspositions.merge(headsign_shapes_dissolved_bydirection[["geometry", "trip_headsign", "shape_id", "direction_id"]].rename(columns={"trip_headsign": "headsign"}), on="headsign", how="left") # try to merge in the line shapes (had hoped to avoid doing for memory reasons, but may be the simplest way)
 buspositions = buspositions.rename(columns={"geometry_x": "point_original", "geometry_y": "route_shape"}) # distinguish new geometry columns from each other
 # the CRS comes undone after the last two operations, so I'm not sure what it uses for the next few, which would seem to require one
-buspositions = gpd.GeoDataFrame(buspositions, crs=NJ_equidistant, geometry="point_original")
-#buspositions[["route_shape", "point_original"]] = buspositions[["route_shape", "point_original"]].apply(lambda col: gpd.GeoSeries(col).set_crs(NJ_equidistant))
+buspositions = gpd.GeoDataFrame(buspositions, crs=projections_dict["equidistant"], geometry="point_original")
+#buspositions[["route_shape", "point_original"]] = buspositions[["route_shape", "point_original"]].apply(lambda col: gpd.GeoSeries(col).set_crs(projections_dict["equidistant"]))
 buspositions["point_interpolated"] = buspositions.apply(lambda row: row.route_shape.interpolate(row.route_shape.project(row.point_original)), axis=1)
 # geometry columns already projected to ESPG 3424 (NJ state plane with units of ft) for distance calculations: https://www.spatialreference.org/ref/epsg/3424/
 buspositions["distance_traveled_cumul"] = buspositions.apply(lambda row: row.route_shape.project(row.point_interpolated, normalized=False), axis=1) # gotta be a way to do this in one call to .apply(), create a series or something
@@ -462,7 +672,7 @@ buspositions["distance_traveled_cumul"] = buspositions.apply(lambda row: row.rou
 # wait, no, the normalized argument is false by default, so this should be in feet...
 # that the vast majority of measurements are 1 or below makes me think this is normalized, whatever the default arg is supposed to be
 # goddammit, run again with normalized=False explicitly stated
-buspositions = gpd.GeoDataFrame(buspositions.drop(columns=["route_shape"]), geometry="point_interpolated", crs=NJ_equidistant)
+buspositions = gpd.GeoDataFrame(buspositions.drop(columns=["route_shape"]), geometry="point_interpolated", crs=projections_dict["equidistant"])
 
 
 #%% calculate distance covered between measurements
@@ -587,11 +797,11 @@ blockgroups_merged = blockgroups.merge(acs_blockgroups, on="gisjoin")
 # declare buffer size 
 buffersize = 402.336 # 1/4 mile in meters
 # create headsign shapes with bufffer 
-buffer = headsign_shapes_dissolved_bydirection.to_crs(equal_area).geometry.buffer(buffersize)
+buffer = headsign_shapes_dissolved_bydirection.to_crs(projections_dict["equal_area"]).geometry.buffer(buffersize)
 headsign_shapes_dissolved_bydirection["buffer"] = buffer
 
 # join block groups that intersect the headsign shape buffers
-blockgroups_headsigns_joined = gpd.sjoin(headsign_shapes_dissolved_bydirection.set_geometry("buffer").to_crs(equal_area), blockgroups_merged.to_crs(equal_area), op="intersects", how="left")
+blockgroups_headsigns_joined = gpd.sjoin(headsign_shapes_dissolved_bydirection.set_geometry("buffer").to_crs(projections_dict["equal_area"]), blockgroups_merged.to_crs(projections_dict["equal_area"]), op="intersects", how="left")
 
 # %% calculate equity measures
 
@@ -715,7 +925,7 @@ blockgroups_merged["equity_block_group"] = False
 blockgroups_merged.loc[blockgroups_merged.prop_poc > service_area_poc_prop, "equity_block_group"] = True
 # redesignate geometry and reproject to equidistant projection for distance measurements
 # need to calculate a new intersection using only the line shapes, not their buffer
-blockgroups_routes_joined_line = gpd.sjoin(headsign_shapes_dissolved_bydirection.to_crs(NJ_equidistant), blockgroups_merged.to_crs(NJ_equidistant), op="intersects", how="left")
+blockgroups_routes_joined_line = gpd.sjoin(headsign_shapes_dissolved_bydirection.to_crs(projections_dict["equidistant"]), blockgroups_merged.to_crs(projections_dict["equidistant"]), op="intersects", how="left")
 # find ratio of route length within equity block groups to route length outside of equity block groups
 # for each route, dissolve on equity_block_group field, then calculate length
 blockgroups_routes_joined_line = blockgroups_routes_joined_line.dissolve(by=["route_short_name", "equity_block_group"]) # maybe add as_index=False if don't want groupby fields to be new index
