@@ -194,6 +194,7 @@ def load_buspositions_data(projections, data_path=None, data_directory=None):
 # %% load gtfs
 def load_headsigns(gtfs_directory):
     # load and headsigns and return a merged dataframe that's the union of headsigns from buspositions and gtfs
+    # also return trips dataframe for later use
 
     # routes, stops, stop_times, trips, shapes = gtfs.import_gtfs(gtfs_directory)
     # load routes as dataframe
@@ -223,8 +224,9 @@ def load_headsigns(gtfs_directory):
     headsigns_merged = headsigns_buspositions.merge(headsigns_gtfs, how="outer", on="headsign", suffixes=("_buspositions", "_gtfs")).sort_values(by="headsign")
     ### pre-populate crosswalk field if the headsigns match
     headsigns_merged["headsign_crosswalk"] = headsigns_merged[(headsigns_merged.route_short_name_buspositions.notna()) & (headsigns_merged.route_short_name_gtfs.notna())].headsign
+    ### merge in direction_id and shape_id
 
-    return headsigns_merged
+    return headsigns_merged, trips
 
 # %% compare headsigns
 def get_matched_routes(headsigns_merged, buspositions):
@@ -234,15 +236,35 @@ def get_matched_routes(headsigns_merged, buspositions):
     print(f"There are {headsigns_merged.groupby(by='route_short_name_buspositions').headsign_crosswalk}")
     # routes that don't appear in a list of routes with no null values for headsign_crosswalk are routes that are entirely matched
     matched_routes = headsigns_merged[headsigns_merged.headsign_crosswalk.notna()].route_short_name_buspositions.unique()
-    print(f"There are {matched_routes} routes from buspositions whose headsigns have a matching gtfs headsign shape")
+    print(f"There are {len(matched_routes)} routes from buspositions whose headsigns have a matching gtfs headsign shape of {len(headsigns_merged.route_short_name_buspositions.unique())} total routes")
 
     buspositions_matched = buspositions[buspositions.route_number.isin(matched_routes)]
     print(f"Returning {buspositions_matched.shape[0]} observations from matched routes of {buspositions.shape[0]} total observations")
-    return buspositions_matched
+    return buspositions_matched, matched_routes
 
 # %% construct final buspositions dataset
-def create_shapes():
-    
+def create_shapes(matched_routes, headsigns_merged): # trips):
+    print("L")
+    headsign_shapes = trips[trips.route_short_name.isin(matched_routes)][["route_short_name", "trip_headsign", "direction_id"]]
+    headsign_shapes = headsign_shapes.drop_duplicates()
+    # edit headsigns in new dataframes to match buspositions format, using pattern from above
+    headsign_shapes["trip_headsign"] = headsign_shapes["trip_headsign"].apply(lambda x: re.sub(r"[ ]*-[ ]*[Ee]x.*", "", x))
+    headsign_shapes.trip_headsign = headsign_shapes.trip_headsign.str.replace("  ", " ")
+    headsign_shapes.trip_headsign = headsign_shapes.trip_headsign.str.replace(r"[ ]*-[ ]*[Ee][x].*", "", regex=True)
+    # change dtypes to more appropriate types
+    headsign_shapes[["direction_id", "shape_id"]] = headsign_shapes[["direction_id", "shape_id"]].astype(str)    
+
+    # construct shapes from gtfs
+    shapes = pd.read_csv(gtfs_directory + "/shapes.txt")
+    shapes.shape_id = shapes.shape_id.astype(str)
+    geometry_gtfs = gpd.points_from_xy(x=shapes.shape_pt_lon, y=shapes.shape_pt_lat) # create points from latlon
+    shapes = gpd.GeoDataFrame(shapes, geometry=geometry_gtfs) # add points to create geodataframe
+
+    # string points together into lines by shape_id
+    shapes = shapes.sort_values(by="shape_pt_sequence").groupby(by=["shape_id"])["geometry"].apply(lambda x: LineString(x.tolist())).reset_index()
+
+
+
 # including speed and matched headsigns
 
 # %% load Census data
@@ -262,9 +284,10 @@ def create_shapes():
 
 # %% main routine
 def main():
-    buspositions = load_buspositions_data(data_path=data_path)
-    headsigns_merged = load_headsigns(gtfs_directory)
-    buspositions_matched = get_matched_routes(headsigns_merged, buspositions)
+    buspositions = load_buspositions_data(projections=projections_dict) # data_path=data_path)
+    headsigns_merged, trips = load_headsigns(gtfs_directory)
+    buspositions_matched, matched_routes = get_matched_routes(headsigns_merged, buspositions)
+    print("Done")
 if __name__ == "__main__":
     main()
 
