@@ -413,7 +413,7 @@ def interpolate_and_calc(buspositions, headsign_shapes, projections_dict):
     return buspositions
 
 # %% do some cleaning (eg remove negative distance and speed measures, as well as average speed)
-def clean_speeds(buspositions, speed_cutoff=None):
+def clean_speeds(buspositions, speed_cutoff=None):    
     # how many observations have negative speeds? by route
     neg_speeds_byroute = buspositions[buspositions.speed < 0].groupby(by="route_number").size().reset_index().rename(columns={0: "neg_speeds_count"}) 
     neg_speeds_byroute["total_obs_count"] = buspositions.groupby(by="route_number").size().reset_index()[0]
@@ -425,7 +425,8 @@ def clean_speeds(buspositions, speed_cutoff=None):
 
     # convert negative speeds to positive, and exclude all speeds greater than provided cutoff, if provided
     print("Converting all negative speeds to positive (they are due to negative calculated incremental distance values)")
-    buspositions.speed = buspositions.loc[buspositions["speed"] < 0, "speed"] * -1
+    #buspositions.speed = buspositions.loc[buspositions["speed"] < 0, "speed"] * -1
+    buspositions.loc[buspositions["speed"] < 0, "speed"] = buspositions.speed * -1
     print(f"There are {(buspositions.speed < 0).sum()} remaining negative speed values")
 
     if speed_cutoff is not None:
@@ -794,7 +795,9 @@ def add_speed_data(buspositions, equity_measures_byroute, peak_cutoffs={"am_star
     full_columns = equity_columns.append("route_short_name_buspositions")
     buspositions = buspositions.merge(equity_measures_byroute[full_columns], left_on="route_number", right_on="route_short_name_buspositions", suffixes=("", ""), how="left")
     
-    # create tempt dataframe to load speed summary data
+    # create temp dataframe to load speed summary data
+    speed_columns = ["speed_mean", "speed_stdev"]
+    equity_measures_temp = pd.DataFrame(columns=])
 
     equity_measures_byroute["speed_mean"] = buspositions.groupby(by="route_number")["speed"].mean().astype(float)
     equity_measures_byroute.loc["service_area", "speed"] = buspositions.speed.mean().astype(float)
@@ -933,7 +936,7 @@ def main():
     equity_measures_byroute, routes_blockgroups_joined, route_shapes, blockgroups_withdata, service_area_distribution = add_equity_measures(headsign_shapes, projections_dict, boundary_path_blockgroup, data_path_blockgroup, buffer_size=None)
     #equity_measures_byroute = determine_equity_routes(equity_measures_byroute, routes_blockgroups_joined, blockgroups, projections_dict)
     #clipped, equity_measures_byroute_v2 = determine_equity_routes_v2(equity_measures_byroute, routes_blockgroups_joined, blockgroups, projections_dict)
-    route_shapes, equity_measures_byroute = determine_equity_routes_v2(equity_measures_byroute, route_shapes, blockgroups_withdata, projections_dict)
+    route_shapes, equity_measures_byroute = determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups_withdata, projections_dict)
 
     # associate speed and variability measures with block groups
     buspositions_new, equity_measures_byroute = add_speed_data(buspositions, equity_measures_byroute)
