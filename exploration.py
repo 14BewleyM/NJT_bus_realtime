@@ -30,6 +30,9 @@
 import pandas as pd
 import geopandas as gpd
 import numpy as np
+import statsmodels.stats.api as sms
+import statsmodels.stats.descriptivestats as smsd
+import statsmodels.stats.weightstats as smsw
 from shapely.geometry import Point, LineString
 import logging
 import datetime
@@ -43,7 +46,8 @@ import sqlalchemy
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, DateTime, Boolean
 from geoalchemy2 import Geometry
-import qgis.core as qgis
+import qgis.core as qcore
+import qgis.processing as qprocessing
 import plotly.graph_objs as go
 import seaborn as sns
 #import chart_studio.plotly as py
@@ -486,7 +490,7 @@ def create_equity_measures(df, by=None, aggfunc=None):
 # select relevant tracts by route and service area
 # determine equity block groups
 # determine equity routes
-def add_equity_measures(buspositions, headsign_shapes, projections_dict, census_boundary_path, census_data_path, buffer_size=None):
+def add_equity_measures(headsign_shapes, projections_dict, census_boundary_path, census_data_path, buffer_size=None):
     # set up Census data (ACS files from NHGIS, using GISJOIN field to merge)
     # provide buffer size in meters
     ## read in data
@@ -525,39 +529,39 @@ def add_equity_measures(buspositions, headsign_shapes, projections_dict, census_
         # .to_crs(projections_dict["equal_area"]
     print("Doing spaital join of non-buffered headsign shapes with Census data")
     headsign_columns = ["headsign_buspositions", "headsign_crosswalk", "headsign_gtfs"] # drop headsign columns in dissolved route dataframe so as not to confuse
-    blockgroups_routes_joined = gpd.sjoin(route_shapes, blockgroups_merged.to_crs(projections_dict["equal_area"]), op="intersects", how="left").drop(columns=headsign_columns)
+    routes_blockgroups_joined = gpd.sjoin(route_shapes, blockgroups_merged.to_crs(projections_dict["equal_area"]), op="intersects", how="left").drop(columns=headsign_columns)
 
     # calculate equity measures
     # create new columns for values of interest
     print("Adding demographic proportions for relevant groups")
-    for df in [blockgroups_routes_joined, acs_blockgroups]:
+    for df in [routes_blockgroups_joined, blockgroups_merged]: # acs_blockgroups]:
         df["prop_poc"], df["prop_white"], df["prop_latino_allraces"], df["prop_black"], df["prop_asian"], df["prop_poverty"] = create_equity_measures(df)    
 
     # define new dataframes for each route and for the whole service area, to avoid double-counting
     # for each route (dropping block groups that are associated more than once with a route)
     #blockgroups_routes_joined_buffer = blockgroups_headsigns_joined.drop_duplicates(["route_short_name_buspositions", "gisjoin"])
     # for the whole service area (dropping all duplicated block groups, using gisjoin field as unique id for block groups)
-    blockgroups_servicearea_joined = blockgroups_routes_joined.drop_duplicates(["gisjoin"])
+    routes_servicearea_joined = routes_blockgroups_joined.drop_duplicates(["gisjoin"])
 
     # calculate proportions by service area and route
     # service area averages for each of the measures
     # index is each of the values, access by eg service_area_distribution.prop_poc.loc["mean"]
-    service_area_distribution = blockgroups_servicearea_joined[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].describe()
+    service_area_distribution = routes_servicearea_joined[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].describe()
     # add statewide mean for each of the variables
-    service_area_distribution.loc["state_mean"] = acs_blockgroups[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].mean()
+    service_area_distribution.loc["state_mean"] = blockgroups_merged[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].mean() # acs_blockgroups[["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]].mean()
 
     # calculating measures for the whole service area and for each route
-    route_index = list(blockgroups_servicearea_joined.route_short_name_buspositions.unique())
+    route_index = list(routes_blockgroups_joined.route_short_name_buspositions.unique())
     route_index.append("service_area")
     columns = ["count_total", "count_poc", "prop_poc", "count_white", "prop_white", "count_latino_allraces", "prop_latino_allraces", "count_black", "prop_black", "count_asian", "prop_asian", "count_poverty_hholds", "prop_poverty"]
     equity_measures_byroute = pd.DataFrame(index=route_index, columns=columns)
     # calculate proportion measures with function (do this also for the merged blockgroups dataframe, for later use in calculating Title VI measures)
     print("Calculating demographic proportions for relevant groups by route")
-    equity_measures_byroute["prop_poc"], equity_measures_byroute["prop_white"], equity_measures_byroute["prop_latino_allraces"], equity_measures_byroute["prop_black"], equity_measures_byroute["prop_asian"], equity_measures_byroute["prop_poverty"] = create_equity_measures(blockgroups_routes_joined, by="route_short_name_buspositions", aggfunc=np.sum)
+    equity_measures_byroute["prop_poc"], equity_measures_byroute["prop_white"], equity_measures_byroute["prop_latino_allraces"], equity_measures_byroute["prop_black"], equity_measures_byroute["prop_asian"], equity_measures_byroute["prop_poverty"] = create_equity_measures(routes_blockgroups_joined, by="route_short_name_buspositions", aggfunc=np.sum)
     blockgroups_merged["prop_poc"], blockgroups_merged["prop_white"], blockgroups_merged["prop_latino_allraces"], blockgroups_merged["prop_black"], blockgroups_merged["prop_asian"], blockgroups_merged["prop_poverty"] = create_equity_measures(blockgroups_merged)
     # calculate proportion measures for the entire service area and statewide, and add to dataframe
     print("Calculating figures for entire service area")
-    equity_measures_byroute.loc["service_area", ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]] = list(create_equity_measures(blockgroups_servicearea_joined, aggfunc=np.sum))
+    equity_measures_byroute.loc["service_area", ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]] = list(create_equity_measures(routes_servicearea_joined, aggfunc=np.sum))
     equity_measures_byroute.loc["statewide", ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]] = list(create_equity_measures(acs_blockgroups, aggfunc=np.sum))
     # calculate total measures by route, as well as for the entire service area and statewide, and add to dataframe
     print("Calculate demographic totals for relevant groups by route")
@@ -570,22 +574,107 @@ def add_equity_measures(buspositions, headsign_shapes, projections_dict, census_
     for column in totals_map_dict:
         #print(column)
         #print(original_variable)
-        equity_measures_byroute[column] = blockgroups_routes_joined.groupby(by="route_short_name_buspositions")[totals_map_dict[column]].sum()
-        equity_measures_byroute.loc["service_area", column] = blockgroups_servicearea_joined[totals_map_dict[column]].sum()
+        equity_measures_byroute[column] = routes_blockgroups_joined.groupby(by="route_short_name_buspositions")[totals_map_dict[column]].sum()
+        equity_measures_byroute.loc["service_area", column] = routes_servicearea_joined[totals_map_dict[column]].sum()
         equity_measures_byroute.loc["statewide", column] = acs_blockgroups[totals_map_dict[column]].sum()
     # calculate POC count separately bc you have to subtract
-    equity_measures_byroute["count_poc"] = blockgroups_routes_joined.groupby(by="route_short_name_buspositions").aluke001.sum() - blockgroups_routes_joined.groupby(by="route_short_name_buspositions").aluke003.sum()
-    equity_measures_byroute.loc["service_area", "count_poc"] = blockgroups_servicearea_joined.aluke001.sum() - blockgroups_servicearea_joined.aluke003.sum()
+    equity_measures_byroute["count_poc"] = routes_blockgroups_joined.groupby(by="route_short_name_buspositions").aluke001.sum() - routes_blockgroups_joined.groupby(by="route_short_name_buspositions").aluke003.sum()
+    equity_measures_byroute.loc["service_area", "count_poc"] = routes_servicearea_joined.aluke001.sum() - routes_servicearea_joined.aluke003.sum()
     equity_measures_byroute.loc["statewide", "count_poc"] = acs_blockgroups.aluke001.sum() - acs_blockgroups.aluke003.sum()
 
-    return equity_measures_byroute, blockgroups_routes_joined, blockgroups, service_area_distribution #, blockgroups_merged
+    return equity_measures_byroute, routes_blockgroups_joined, route_shapes.drop(columns=headsign_columns), blockgroups_merged, service_area_distribution #, blockgroups_merged
 
 # function to assign routes as equity routes
-def determine_equity_routes(equity_measures_byroute, joined_census_routes_gdf, blockgroups, projections_dict, columns=None, proportion_cutoffs=None, mileage_cutoff=1/3):
+def determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups, projections_dict, columns=None, proportion_cutoffs=None, mileage_cutoff=1/3):
     # determine which routes are equity routes 
 
     # equity_measures_byroute is a dataframe with overall demographic proportions for routes and the service area
-    # joined_census_routes_gdf is a dataframe that associates routes with the census geographies they intersect
+    # joined_routes_census_gdf is a dataframe that associates routes with the census geographies they intersect
+    # pass a column or list of columns to determine equity route status for those measures (one of prop_poc, prop_white, prop_latino_allraces, prop_black, prop_asian, or prop_poverty)
+    # can pass proportion cutoffs (as a decimal), if not will use value for the whole service area for each measure
+
+    # calculate FTA equity measures
+    print("Calculating FTA equity measures")
+
+    # reproject geometry field to equidistant projection
+    projection = projections_dict["equidistant"]
+    for gdf in [route_shapes, blockgroups]:
+        if gdf.crs != projection:
+            print(f"Reprojecting to equidistant projection {projection}")
+            gdf = gdf.to_crs(projection)
+            print(f"Projection is now {gdf.crs}")
+    # drop duplicate geometries before reprojecting to save time
+    # there should be just one geometry per route
+    #print("Dropping duplicate geometries before reprojecting and re-merging - be sure there is only one geometry per route in the joined_census_route_df!")
+    #route_shapes = route_shapes.merge(route_shapes.drop_duplicates(subset=["route_short_name_buspositions"]).to_crs(projection), on="route_short_name_buspositions", how="left", suffixes=("", "_reprojected"))
+    #route_shapes = route_shapes.set_geometry("geometry_reprojected")
+
+    # add equity measures to blockgroups dataframe
+    # to determine associate an equity designation with each blockgroup shape
+    equity_columns = ["prop_white", "prop_poc", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]
+    if columns is not None:
+        print("Using provided column values with service area measureas (FTA standard) to calculate equity mileage")        
+        equity_columns = columns
+    else:
+        print("Using default column values with service area measureas (FTA standard) to calculate equity mileage")
+    #final_columns = equity_columns.copy()
+    #final_columns.append("gisjoin")
+    #blockgroups = blockgroups.merge(route_shapes[final_columns], on="gisjoin", how="left")
+    #blockgroups = blockgroups.to_crs(projection)
+
+    # create list of final column names for use in final merge
+    final_columns = []
+
+    # assign equity designation to blockgroups for each equity measure
+    for column in equity_columns:
+        # identify service area proportion for given measure
+        service_area_prop = equity_measures_byroute.loc["service_area", column]
+        if proportion_cutoffs is not None: # this wouldn't work the way you want it to
+            service_area_prop = proportion_cutoffs
+        # designate block groups as equity block groups if their proportion for the measure is greater than the service area proportion
+        blockgroups["equity_bg_" + column] = False
+        blockgroups.loc[blockgroups[column] > service_area_prop, "equity_bg_" + column] = True
+
+    # using overlay:
+    #overlay = gpd.overlay(blockgroups, route_shapes, how="intersection")
+    #return overlay
+
+    # using clip: https://www.earthdatascience.org/courses/use-data-open-source-python/intro-vector-data-python/vector-data-processing/clip-vector-data-in-python-geopandas-shapely/
+    # just doing prop poc for now to see how fast it goes
+    #clipped_equity = gpd.clip(route_shapes, blockgroups[blockgroups.equity_bg_prop_poc==True])
+    #clipped_total = gpd.clip(route_shapes, blockgroups)
+    
+    # create length columns
+    #clipped_equity["length"] = clipped_equity.length
+    #clipped_total["length"] = clipped_total.length
+    #equity_miles = clipped_equity.length
+    route_shapes["total_length"] = route_shapes.length / 5280
+    final_columns.append("total_length")
+    for column in equity_columns:
+        clipped_equity = gpd.clip(route_shapes, blockgroups[blockgroups["equity_bg_" + column]==True])
+        route_shapes["equity_miles_" + column] = clipped_equity.length / 5280
+        route_shapes["equity_miles_ratio_" + column] = route_shapes["equity_miles_" + column] / route_shapes["total_length"]
+        # determine equity routes
+        print(f"Determining equity routes (those with more than {mileage_cutoff} of revenue miles in equity block groups) for {column}")
+        route_shapes["equity_route_" + column] = False
+        route_shapes.loc[route_shapes["equity_miles_ratio_" + column] > mileage_cutoff, "equity_route_" + column] = True
+        # add columns to list of names
+        final_columns.append("equity_miles_" + column)
+        final_columns.append("equity_miles_ratio_" + column)
+        final_columns.append("equity_route_" + column)
+    
+    # add route number column so can use to merge
+    final_columns.append("route_short_name_buspositions")
+    equity_measures_byroute = equity_measures_byroute.merge(route_shapes[final_columns], left_index=True, right_on="route_short_name_buspositions", how="outer").set_index("route_short_name_buspositions")
+
+    return route_shapes, equity_measures_byroute
+
+
+def determine_equity_routes_v1(equity_measures_byroute, joined_routes_census_gdf, blockgroups, projections_dict, columns=None, proportion_cutoffs=None, mileage_cutoff=1/3):
+    # determine which routes are equity routes 
+
+    # equity_measures_byroute is a dataframe with overall demographic proportions for routes and the service area
+    # joined_routes_census_gdf is a dataframe that associates routes with the census geographies they intersect
     # pass a column or list of columns to determine equity route status for those measures (one of prop_poc, prop_white, prop_latino_allraces, prop_black, prop_asian, or prop_poverty)
     # can pass proportion cutoffs (as a decimal), if not will use value for the whole service area
 
@@ -598,11 +687,11 @@ def determine_equity_routes(equity_measures_byroute, joined_census_routes_gdf, b
     # drop duplicate geometries before reprojecting to save time
     # there should be just one geometry per route
     print("Dropping duplicate geometries before reprojecting and re-merging - be sure there is only one geometry per route in the joined_census_route_df!")
-    joined_census_routes_gdf = joined_census_routes_gdf.merge(joined_census_routes_gdf.drop_duplicates(subset=["route_short_name_buspositions"]).to_crs(projection), on="route_short_name_buspositions", how="left", suffixes=("", "_reprojected"))
-    joined_census_routes_gdf = joined_census_routes_gdf.set_geometry("geometry_reprojected")
+    joined_routes_census_gdf = joined_routes_census_gdf.merge(joined_routes_census_gdf.drop_duplicates(subset=["route_short_name_buspositions"]).to_crs(projection), on="route_short_name_buspositions", how="left", suffixes=("", "_reprojected"))
+    joined_routes_census_gdf = joined_routes_census_gdf.set_geometry("geometry_reprojected")
     # merge block group geometry back in for later use in calculating lengths of routes within each block group
-    joined_census_routes_gdf = joined_census_routes_gdf.merge(blockgroups[["gisjoin", "geometry"]], on="gisjoin", how="left", suffixes=("", "_blockpoly"))
-    joined_census_routes_gdf.geometry_blockpoly = joined_census_routes_gdf.geometry_blockpoly.to_crs(projections_dict["equidistant"])
+    joined_routes_census_gdf = joined_routes_census_gdf.merge(blockgroups[["gisjoin", "geometry"]], on="gisjoin", how="left", suffixes=("", "_blockpoly"))
+    joined_routes_census_gdf.geometry_blockpoly = joined_routes_census_gdf.geometry_blockpoly.to_crs(projections_dict["equidistant"])
     # may need to make a pull request and use .overlay that works with shapes other than polygons, see here: https://github.com/geopandas/geopandas/issues/821
 
     # attempt this with QGIS
@@ -627,19 +716,19 @@ def determine_equity_routes(equity_measures_byroute, joined_census_routes_gdf, b
             # identify service area proportion for given measure
             service_area_prop = equity_measures_byroute.loc["service_area", column]
             # designate block groups as equity block groups if their proportion for the measure is greater than the service area proportion
-            joined_census_routes_gdf["equity_block_group"] = False
-            joined_census_routes_gdf.loc[joined_census_routes_gdf[column] > service_area_prop, "equity_block_group"] = True
+            joined_routes_census_gdf["equity_block_group"] = False
+            joined_routes_census_gdf.loc[joined_routes_census_gdf[column] > service_area_prop, "equity_block_group"] = True
             # calculate total length for route shapes
-            joined_census_routes_gdf["length"] = joined_census_routes_gdf.geometry.length
+            joined_routes_census_gdf["length"] = joined_routes_census_gdf.geometry.length
             # calculate length of each route associated with equity and non-equity block groups
             ## ORIGINAL
-            rev_miles_total = joined_census_routes_gdf.drop_duplicates(subset="route_short_name_buspositions").groupby(by="route_short_name_buspositions").length.sum() / 5280
-            rev_miles_equity = joined_census_routes_gdf[joined_census_routes_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
+            rev_miles_total = joined_routes_census_gdf.drop_duplicates(subset="route_short_name_buspositions").groupby(by="route_short_name_buspositions").length.sum() / 5280
+            rev_miles_equity = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
             ## NEW
-            #equity_gdf = joined_census_routes_gdf[joined_census_routes_gdf.equity_block_group==True][["route_short_name_buspositions", "gisjoin", "geometry_blockpoly"]]
-            ###nonequity_gdf = joined_census_routes_gdf[joined_census_routes_gdf.equity_block_group==False][["route_short_name_buspositions", "gisjoin", "geometry_blockpoly"]]
-            #route_shapes = joined_census_routes_gdf.drop_duplicates(subset=["route_short_name_buspositions"]).to_crs(projection)
-            #rev_miles_total = joined_census_routes_gdf.drop_duplicates(subset="route_short_name_buspositions").groupby(by="route_short_name_buspositions").length.sum() / 5280            
+            #equity_gdf = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==True][["route_short_name_buspositions", "gisjoin", "geometry_blockpoly"]]
+            ###nonequity_gdf = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==False][["route_short_name_buspositions", "gisjoin", "geometry_blockpoly"]]
+            #route_shapes = joined_routes_census_gdf.drop_duplicates(subset=["route_short_name_buspositions"]).to_crs(projection)
+            #rev_miles_total = joined_routes_census_gdf.drop_duplicates(subset="route_short_name_buspositions").groupby(by="route_short_name_buspositions").length.sum() / 5280            
             #rev_miles_equity = route_shapes.apply(lambda row: gpd.clip(gpd.GeoDataFrame(row, geometry=row.geometry), equity_gdf).geometry.length(), axis=1)
             # add lengths to equity measures dataframe as new columns, rev_miles_total, rev_miles_equity, and rev_miles_equity_ratio
             equity_measures_byroute["rev_miles_total"] = rev_miles_total.astype(float)
@@ -660,13 +749,13 @@ def determine_equity_routes(equity_measures_byroute, joined_census_routes_gdf, b
                 # identify service area proportion for given measure
                 service_area_prop = equity_measures_byroute.loc["service_area", column]
                 # designate block groups as equity block groups if their proportion for the measure is greater than the service area proportion
-                joined_census_routes_gdf["equity_block_group"] = False
-                joined_census_routes_gdf.loc[joined_census_routes_gdf[column] > proportion_cutoff, "equity_block_group"] = True
+                joined_routes_census_gdf["equity_block_group"] = False
+                joined_routes_census_gdf.loc[joined_routes_census_gdf[column] > proportion_cutoff, "equity_block_group"] = True
                 # calculate total length for route shapes
-                joined_census_routes_gdf["length"] = joined_census_routes_gdf.geometry.length
+                joined_routes_census_gdf["length"] = joined_routes_census_gdf.geometry.length
                 # calculate length of each route associated with equity and non-equity block groups
-                rev_miles_total = joined_census_routes_gdf.groupby(by="route_short_name_buspositions").length.sum() / 5280
-                rev_miles_equity = joined_census_routes_gdf[joined_census_routes_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
+                rev_miles_total = joined_routes_census_gdf.groupby(by="route_short_name_buspositions").length.sum() / 5280
+                rev_miles_equity = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
                 # add lengths to equity measures dataframe as new columns, rev_miles_total, rev_miles_equity, and rev_miles_equity_ratio
                 equity_measures_byroute["rev_miles_total"] = rev_miles_total
                 equity_measures_byroute["rev_miles_equity"] = rev_miles_equity
@@ -680,13 +769,13 @@ def determine_equity_routes(equity_measures_byroute, joined_census_routes_gdf, b
                 # identify service area proportion for given measure
                 service_area_prop = equity_measures_byroute.loc["service_area", column]
                 # designate block groups as equity block groups if their proportion for the measure is greater than the service area proportion
-                joined_census_routes_gdf["equity_block_group"] = False
-                joined_census_routes_gdf.loc[joined_census_routes_gdf[column] > service_area_prop, "equity_block_group"] = True
+                joined_routes_census_gdf["equity_block_group"] = False
+                joined_routes_census_gdf.loc[joined_routes_census_gdf[column] > service_area_prop, "equity_block_group"] = True
                 # calculate total length for route shapes
-                joined_census_routes_gdf["length"] = joined_census_routes_gdf.geometry.length
+                joined_routes_census_gdf["length"] = joined_routes_census_gdf.geometry.length
                 # calculate length of each route associated with equity and non-equity block groups
-                rev_miles_total = joined_census_routes_gdf.groupby(by="route_short_name_buspositions").length.sum() / 5280
-                rev_miles_equity = joined_census_routes_gdf[joined_census_routes_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
+                rev_miles_total = joined_routes_census_gdf.groupby(by="route_short_name_buspositions").length.sum() / 5280
+                rev_miles_equity = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
                 # add lengths to equity measures dataframe as new columns, rev_miles_total, rev_miles_equity, and rev_miles_equity_ratio
                 equity_measures_byroute["rev_miles_total"] = rev_miles_total
                 equity_measures_byroute["rev_miles_equity"] = rev_miles_equity
@@ -702,8 +791,11 @@ def add_speed_data(buspositions, equity_measures_byroute, peak_cutoffs={"am_star
     # add equity route designation to buspositions
     equity_measure_columns = ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]    
     equity_columns = [("equity_route_" + column) for column in equity_measure_columns]
-    buspositions = buspositions.merge(equity_measures_byroute["route_short_name_buspositions"].append(equity_columns)], left_on="route_number", right_on="route_short_name_buspositions", suffixes=("", ""), how="left")
+    full_columns = equity_columns.append("route_short_name_buspositions")
+    buspositions = buspositions.merge(equity_measures_byroute[full_columns], left_on="route_number", right_on="route_short_name_buspositions", suffixes=("", ""), how="left")
     
+    # create tempt dataframe to load speed summary data
+
     equity_measures_byroute["speed_mean"] = buspositions.groupby(by="route_number")["speed"].mean().astype(float)
     equity_measures_byroute.loc["service_area", "speed"] = buspositions.speed.mean().astype(float)
     equity_measures_byroute["speed_stdev"] = buspositions.groupby(by="route_number")["speed"].std().astype(float)
@@ -811,26 +903,40 @@ def line_plots_speed(buspositions):
 
 # %% main routine
 def main():
-    # load from postgresql db
-    buspositions = load_buspositions_data(projections_dict=projections_dict) 
-    # create merged headsigns and trips dataframes (with crosswalk from file)
-    headsigns_merged, trips = create_headsign_crosswalk(buspositions, gtfs_directory, crosswalk_path=crosswalk_path) # be on the lookout for weird stuff with GO28/258, not sure you did the crosswalk right
-    # create dataframe with only observations from routes that have been entirely matched with crosswalk (ie mappable using gtfs shapes)
-    buspositions_matched, matched_routes_buspositions, matched_routes_gtfs = get_matched_routes(headsigns_merged, buspositions)
-    # create headsign shapes
-    headsign_shapes = create_shapes(matched_routes_gtfs, headsigns_merged, trips, projections_dict=projections_dict)
-    # interpolate and calculate cumulative distances for each bus observation
-    buspositions = interpolate_and_calc(buspositions_matched, headsign_shapes, projections_dict)
-    # remove excessive speeds
-    buspositions = clean_speeds(buspositions, speed_cutoff=70)
-    # associate equity measures with routes
-    equity_measures_byroute, blockgroups_routes_joined, blockgroups, service_area_distribution = add_equity_measures(buspositions, headsign_shapes, projections_dict, boundary_path_blockgroup, data_path_blockgroup, buffer_size=None)
-    equity_measures_byroute = determine_equity_routes(equity_measures_byroute, blockgroups_routes_joined, blockgroups, projections_dict)
+    read_from_file = 0
+    export_dataframes = 0
+
+    if read_from_file==1: # read in data from files
+        buspositions = gpd.read_file("buspositions.gpkg", layer="buspositions")
+        headsign_shapes = gpd.read_file("buspositions.gpkg", layer="headsign_shapes")
+
+    else: # create dataframes
+        # load from postgresql db
+        buspositions = load_buspositions_data(projections_dict=projections_dict) 
+        # create merged headsigns and trips dataframes (with crosswalk from file)
+        headsigns_merged, trips = create_headsign_crosswalk(buspositions, gtfs_directory, crosswalk_path=crosswalk_path) # be on the lookout for weird stuff with GO28/258, not sure you did the crosswalk right
+        # create dataframe with only observations from routes that have been entirely matched with crosswalk (ie mappable using gtfs shapes)
+        buspositions_matched, matched_routes_buspositions, matched_routes_gtfs = get_matched_routes(headsigns_merged, buspositions)
+        # create headsign shapes
+        headsign_shapes = create_shapes(matched_routes_gtfs, headsigns_merged, trips, projections_dict=projections_dict)
+        # interpolate and calculate cumulative distances for each bus observation
+        buspositions = interpolate_and_calc(buspositions_matched, headsign_shapes, projections_dict)
+        # remove excessive speeds
+        buspositions = clean_speeds(buspositions, speed_cutoff=70)
+
+        # export files as layers to single geopackage
+        if export_dataframes==1:
+            buspositions.to_file("buspositions.gpkg", driver="GPKG", layer="buspositions")
+            headsign_shapes.to_file("buspositions.gpkg", driver="GPKG", layer="headsign_shapes")
     
+    # associate equity measures with routes
+    equity_measures_byroute, routes_blockgroups_joined, route_shapes, blockgroups_withdata, service_area_distribution = add_equity_measures(headsign_shapes, projections_dict, boundary_path_blockgroup, data_path_blockgroup, buffer_size=None)
+    #equity_measures_byroute = determine_equity_routes(equity_measures_byroute, routes_blockgroups_joined, blockgroups, projections_dict)
+    #clipped, equity_measures_byroute_v2 = determine_equity_routes_v2(equity_measures_byroute, routes_blockgroups_joined, blockgroups, projections_dict)
+    route_shapes, equity_measures_byroute = determine_equity_routes_v2(equity_measures_byroute, route_shapes, blockgroups_withdata, projections_dict)
+
     # associate speed and variability measures with block groups
     buspositions_new, equity_measures_byroute = add_speed_data(buspositions, equity_measures_byroute)
-
-    # HOW MANY SPEED OBSERVATIONS ARE 0 MPH OR VERY CLOSE??
 
     print("Done")
 if __name__ == "__main__":

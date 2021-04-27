@@ -1,4 +1,5 @@
 *.csv
+.xlsx
 *.gpkg
 *.gpkg-journal
 *.txt
