@@ -65,6 +65,7 @@ data_path_tract = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/
 data_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/school/Rutgers_courses_etc/2021_spring/3_transportation_equity/paper/nhgis0008_csv/nhgis0008_ds244_20195_2019_blck_grp.csv"
 boundary_path_tract = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_tracts/US_tract_2019.shp"
 boundary_path_blockgroup = "C:/Users/Bewle/OneDrive/Documents/data/geographic/boundaries/2019_NJ_block_groups/NJ_blck_grp_2019.shp"
+ridership_data_path = "C:/Users/Bewle/OneDrive/Documents/data/nongeographic/NJT/ridership_2013_2019_extracted.csv"
 
 # %% initial settings
 # projections
@@ -77,7 +78,7 @@ projections_dict = {"equidistant": NJ_equidistant,
                     "original_projection": original_projection}
 
 # %% load buspositions data
-def load_buspositions_data(projections_dict, data_file=None, data_directory=None): 
+def load_buspositions_data(projections_dict, data_file=None, data_directory=None, date_subset=None): 
     # provide data_path if want to read in data from cvs, data_directory if want to export from postgresql to csv
     # provide projections as a dict of projections containing an original projection, an equal area projection, and an equidistant projection
     # provide just projections if want to load with postgresql but not export to csv
@@ -116,6 +117,20 @@ def load_buspositions_data(projections_dict, data_file=None, data_directory=None
                                             AND b.id <> b1.id \
                                             AND b.has_service = True \
                                             )"
+        if date_subset != None: 
+            sql = f"SELECT * FROM buspositions b \
+                                        WHERE NOT EXISTS( \
+                                            SELECT FROM buspositions b1 \
+                                            WHERE b.run_number = b1.run_number \
+                                            AND b.vehicle_id = b1.vehicle_id \
+                                            AND b.lon = b1.lon \
+                                            AND b.lat = b1.lat \
+                                            AND date_trunc('day', b.timestamp)::date = date_trunc('day', b1.timestamp)::date \
+                                            AND b.headsign = b1.headsign \
+                                            AND b.id <> b1.id \
+                                            AND b.has_service = True \
+                                            ) \
+                                            AND WHERE date_trunc('day', b.timestamp)::date={date_subset}"
         #distinct_rows = engine.execute(sqlalchemy.text(sql))
         #print(f"Result after deduping with SQL has {distinct_rows.rowcount} rows")
         print(f"Reading in and deduplicating dataset from database")
@@ -420,6 +435,8 @@ def clean_speeds(buspositions, speed_cutoff=None):
     neg_speeds_byroute["neg_speed_pct"] = neg_speeds_byroute.neg_speeds_count / neg_speeds_byroute.total_obs_count
     neg_speeds_byroute.sort_values(by="neg_speed_pct", ascending=False)
     print(f"There are {(buspositions.speed < 0).sum()} observations with negative speeds, out of {buspositions.shape[0]} total observations")
+    print(f"Removing null observations")
+    buspositions = buspositions.dropna(subset=["speed"])
     print(f"There are {buspositions.speed.isna().sum()} observations with null speeds, out of {buspositions.shape[0]} total observations")
     print(f"These represent {((((buspositions.speed < 0).sum() + buspositions.speed.isna().sum())/buspositions.shape[0]) * 100):.{3}}% of all observations")
 
@@ -585,6 +602,24 @@ def add_equity_measures(headsign_shapes, projections_dict, census_boundary_path,
 
     return equity_measures_byroute, routes_blockgroups_joined, route_shapes.drop(columns=headsign_columns), blockgroups_merged, service_area_distribution #, blockgroups_merged
 
+# function to join buspositions with blockgroups and calculate average speed by blockgroup
+def calculate_blockgroup_speeds(blockgroups, buspositions, projection=None):
+    print("Calculating average speed by blockgroup")
+    
+    print("Reprojecting to equal area projection for blockgroups and buspositions")
+    blockgroups = blockgroups.to_crs(projection)
+    buspositions = buspositions.to_crs(projection)
+    print("Joining buspositions with blockgroups")
+    blockgroups = gpd.sjoin(blockgroups, buspositions, how="left", op="contains")
+
+    columns_to_keep = ["gisjoin", "geometry", "prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty", "timestamp",
+                       "vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat", "time_elapsed_seconds", "headsign_crosswalk",
+                       "headsign_buspositions", "distance_traveled_cumul", "distance_traveled_prev", "speed", "equity_route_prop_poc", "equity_route_prop_white",
+                       "equity_route_prop_latino_allraces", "equity_route_prop_black", "equity_route_prop_asian", "equity_route_prop_poverty"]
+
+    print("Dropping null speed observations and irrelevant columns (retaining gisjoin as unique blockgroup identifier)")
+    return blockgroups[blockgroups.speed.notna()][columns_to_keep] #.groupby(by="gisjoin").speed.mean()
+
 # function to assign routes as equity routes
 def determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups, projections_dict, columns=None, proportion_cutoffs=None, mileage_cutoff=1/3):
     # determine which routes are equity routes 
@@ -599,11 +634,13 @@ def determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups, 
 
     # reproject geometry field to equidistant projection
     projection = projections_dict["equidistant"]
-    for gdf in [route_shapes, blockgroups]:
-        if gdf.crs != projection:
-            print(f"Reprojecting to equidistant projection {projection}")
-            gdf = gdf.to_crs(projection)
-            print(f"Projection is now {gdf.crs}")
+    #for gdf in [route_shapes, blockgroups]:
+     #   if gdf.crs != projection:
+      #      print(f"Reprojecting to equidistant projection {projection}")
+       #     gdf = gdf.to_crs(projection)
+        #    print(f"Projection is now {gdf.crs}")
+    route_shapes = route_shapes.to_crs(projection)
+    blockgroups = blockgroups.to_crs(projection)
     # drop duplicate geometries before reprojecting to save time
     # there should be just one geometry per route
     #print("Dropping duplicate geometries before reprojecting and re-merging - be sure there is only one geometry per route in the joined_census_route_df!")
@@ -627,6 +664,7 @@ def determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups, 
     final_columns = []
 
     # assign equity designation to blockgroups for each equity measure
+    print("Assigning equity status to block groups")
     for column in equity_columns:
         # identify service area proportion for given measure
         service_area_prop = equity_measures_byroute.loc["service_area", column]
@@ -649,6 +687,7 @@ def determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups, 
     #clipped_equity["length"] = clipped_equity.length
     #clipped_total["length"] = clipped_total.length
     #equity_miles = clipped_equity.length
+    print("Calculating route lengths and equity route status")
     route_shapes["total_length"] = route_shapes.length / 5280
     final_columns.append("total_length")
     for column in equity_columns:
@@ -671,152 +710,211 @@ def determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups, 
     return route_shapes, equity_measures_byroute
 
 
-def determine_equity_routes_v1(equity_measures_byroute, joined_routes_census_gdf, blockgroups, projections_dict, columns=None, proportion_cutoffs=None, mileage_cutoff=1/3):
-    # determine which routes are equity routes 
-
-    # equity_measures_byroute is a dataframe with overall demographic proportions for routes and the service area
-    # joined_routes_census_gdf is a dataframe that associates routes with the census geographies they intersect
-    # pass a column or list of columns to determine equity route status for those measures (one of prop_poc, prop_white, prop_latino_allraces, prop_black, prop_asian, or prop_poverty)
-    # can pass proportion cutoffs (as a decimal), if not will use value for the whole service area
-
-    # calculate FTA equity measures
-    print("Calculating FTA equity measures")
-
-    # reproject geometry field to equidistant projection
-    projection = projections_dict["equidistant"]
-    print(f"Reprojecting line shapes to equidistant projection {projection}")
-    # drop duplicate geometries before reprojecting to save time
-    # there should be just one geometry per route
-    print("Dropping duplicate geometries before reprojecting and re-merging - be sure there is only one geometry per route in the joined_census_route_df!")
-    joined_routes_census_gdf = joined_routes_census_gdf.merge(joined_routes_census_gdf.drop_duplicates(subset=["route_short_name_buspositions"]).to_crs(projection), on="route_short_name_buspositions", how="left", suffixes=("", "_reprojected"))
-    joined_routes_census_gdf = joined_routes_census_gdf.set_geometry("geometry_reprojected")
-    # merge block group geometry back in for later use in calculating lengths of routes within each block group
-    joined_routes_census_gdf = joined_routes_census_gdf.merge(blockgroups[["gisjoin", "geometry"]], on="gisjoin", how="left", suffixes=("", "_blockpoly"))
-    joined_routes_census_gdf.geometry_blockpoly = joined_routes_census_gdf.geometry_blockpoly.to_crs(projections_dict["equidistant"])
-    # may need to make a pull request and use .overlay that works with shapes other than polygons, see here: https://github.com/geopandas/geopandas/issues/821
-
-    # attempt this with QGIS
-    # some resources: 
-    # https://gis.stackexchange.com/questions/173303/using-each-feature-of-vector-layer-as-clip-mask-over-separate-point-layer-stori
-    # https://gis.stackexchange.com/questions/362979/loading-geodataframe-as-qgis-vector-layer-without-exporting-to-shapefile
-    # https://docs.qgis.org/3.16/en/docs/pyqgis_developer_cookbook/vector.html
-    # https://docs.qgis.org/3.16/en/docs/pyqgis_developer_cookbook/crs.html
-
-    # OR maybe do this by creating two dataframes,
-    # one of polygons from equity=True block groups, and one for equity=False
-    # and then intersect each route shape with each of those geodataframes
-
-    if (type(columns) is not list) and (columns is not None):
-        raise TypeError("Must provide columns as a list (even for single values), or pass nothing to use all equity measures")
-    elif columns is None: 
-        if proportion_cutoffs is not None:
-            raise ValueError("If passing proportion cutoffs, column values must also be provided")
-        print("Using default column values with service area measureas (FTA standard) to calculate equity mileage")
-        columns = ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]
-        for column in columns:
-            # identify service area proportion for given measure
-            service_area_prop = equity_measures_byroute.loc["service_area", column]
-            # designate block groups as equity block groups if their proportion for the measure is greater than the service area proportion
-            joined_routes_census_gdf["equity_block_group"] = False
-            joined_routes_census_gdf.loc[joined_routes_census_gdf[column] > service_area_prop, "equity_block_group"] = True
-            # calculate total length for route shapes
-            joined_routes_census_gdf["length"] = joined_routes_census_gdf.geometry.length
-            # calculate length of each route associated with equity and non-equity block groups
-            ## ORIGINAL
-            rev_miles_total = joined_routes_census_gdf.drop_duplicates(subset="route_short_name_buspositions").groupby(by="route_short_name_buspositions").length.sum() / 5280
-            rev_miles_equity = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
-            ## NEW
-            #equity_gdf = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==True][["route_short_name_buspositions", "gisjoin", "geometry_blockpoly"]]
-            ###nonequity_gdf = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==False][["route_short_name_buspositions", "gisjoin", "geometry_blockpoly"]]
-            #route_shapes = joined_routes_census_gdf.drop_duplicates(subset=["route_short_name_buspositions"]).to_crs(projection)
-            #rev_miles_total = joined_routes_census_gdf.drop_duplicates(subset="route_short_name_buspositions").groupby(by="route_short_name_buspositions").length.sum() / 5280            
-            #rev_miles_equity = route_shapes.apply(lambda row: gpd.clip(gpd.GeoDataFrame(row, geometry=row.geometry), equity_gdf).geometry.length(), axis=1)
-            # add lengths to equity measures dataframe as new columns, rev_miles_total, rev_miles_equity, and rev_miles_equity_ratio
-            equity_measures_byroute["rev_miles_total"] = rev_miles_total.astype(float)
-            equity_measures_byroute["rev_miles_equity_" + column] = rev_miles_equity.astype(float)
-            equity_measures_byroute["rev_miles_equity_ratio_" + column] = rev_miles_equity/rev_miles_total
-            equity_measures_byroute["equity_route_" + column] = False
-            equity_measures_byroute[equity_measures_byroute["rev_miles_equity_ratio_" + column] > mileage_cutoff]["equity_route_" + column] = True
-    else: # use provided columns in this case
-        if proportion_cutoffs is not None:
-            if type(proportion_cutoffs) is not list:
-                raise TypeError("Proportion cutoffs must be passed as list (even for single values)")
-            if len(columns) != len(proportion_cutoffs):
-                raise ValueError("The number of proportion cutoffs must match the number of columns")
-            print("Using provided proportion cutoffs to calculate equity mileage for provided columns")
-            column_cutoff_dict = dict(zip(columns, proportion_cutoffs))
-            projection = projections_dict["equidistant"]
-            for column, proportion_cutoff in column_cutoff_dict.items():
-                # identify service area proportion for given measure
-                service_area_prop = equity_measures_byroute.loc["service_area", column]
-                # designate block groups as equity block groups if their proportion for the measure is greater than the service area proportion
-                joined_routes_census_gdf["equity_block_group"] = False
-                joined_routes_census_gdf.loc[joined_routes_census_gdf[column] > proportion_cutoff, "equity_block_group"] = True
-                # calculate total length for route shapes
-                joined_routes_census_gdf["length"] = joined_routes_census_gdf.geometry.length
-                # calculate length of each route associated with equity and non-equity block groups
-                rev_miles_total = joined_routes_census_gdf.groupby(by="route_short_name_buspositions").length.sum() / 5280
-                rev_miles_equity = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
-                # add lengths to equity measures dataframe as new columns, rev_miles_total, rev_miles_equity, and rev_miles_equity_ratio
-                equity_measures_byroute["rev_miles_total"] = rev_miles_total
-                equity_measures_byroute["rev_miles_equity"] = rev_miles_equity
-                equity_measures_byroute["rev_miles_equity_ratio"] = rev_miles_equity/rev_miles_total
-                equity_measures_byroute["equity_route"] = False
-                equity_measures_byroute[equity_measures_byroute.rev_miles_equity_ratio > mileage_cutoff]["equity_route"] = True                
-        else: # use provided column values, with service area measures as the cutoff
-            print("Using service area values (FTA standard) to calculate equity mileage for provided columns")
-            projection = projections_dict["equidistant"]
-            for column in columns:
-                # identify service area proportion for given measure
-                service_area_prop = equity_measures_byroute.loc["service_area", column]
-                # designate block groups as equity block groups if their proportion for the measure is greater than the service area proportion
-                joined_routes_census_gdf["equity_block_group"] = False
-                joined_routes_census_gdf.loc[joined_routes_census_gdf[column] > service_area_prop, "equity_block_group"] = True
-                # calculate total length for route shapes
-                joined_routes_census_gdf["length"] = joined_routes_census_gdf.geometry.length
-                # calculate length of each route associated with equity and non-equity block groups
-                rev_miles_total = joined_routes_census_gdf.groupby(by="route_short_name_buspositions").length.sum() / 5280
-                rev_miles_equity = joined_routes_census_gdf[joined_routes_census_gdf.equity_block_group==True].groupby(by="route_short_name_buspositions").length.sum() / 5280
-                # add lengths to equity measures dataframe as new columns, rev_miles_total, rev_miles_equity, and rev_miles_equity_ratio
-                equity_measures_byroute["rev_miles_total"] = rev_miles_total
-                equity_measures_byroute["rev_miles_equity"] = rev_miles_equity
-                equity_measures_byroute["rev_miles_equity_ratio"] = rev_miles_equity/rev_miles_total
-                equity_measures_byroute["equity_route"] = False
-                equity_measures_byroute[equity_measures_byroute.rev_miles_equity_ratio > mileage_cutoff]["equity_route"] = True                       
-    return equity_measures_byroute
-
 # speeds by block group (spatial join of speed observations with block groups)
 
 # %% add speed data
-def add_speed_data(buspositions, equity_measures_byroute, peak_cutoffs={"am_start": 6, "am_end": 9, "pm_start": 16, "pm_end": 18}):
+# this is not done in the best way, to say the least
+def add_speed_data(buspositions, equity_measures_byroute, peak_cutoffs={"am_start": 6, "am_end": 9, "pm_start": 16, "pm_end": 18}, zscore=1.96, ridership_data_path=None):
+    print("Adding speed and ridership data")
     # add equity route designation to buspositions
-    equity_measure_columns = ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]    
-    equity_columns = [("equity_route_" + column) for column in equity_measure_columns]
-    full_columns = equity_columns.append("route_short_name_buspositions")
-    buspositions = buspositions.merge(equity_measures_byroute[full_columns], left_on="route_number", right_on="route_short_name_buspositions", suffixes=("", ""), how="left")
+    equity_measure_columns = ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]
+    equity_count_columns = ["count_poc", "count_white", "count_latino_allraces", "count_black", "count_asian", "count_poverty"]
+    equity_route_columns = [("equity_route_" + column) for column in equity_measure_columns]
+
+    # merge in the equity columns that aren't yet in the buspositions dataset (should be all of them, if running script from beginning)
+    unadded_equity_route_columns = set(equity_route_columns) - set(buspositions.columns)
+    if len(unadded_equity_route_columns) > 0: 
+        print("Associating equity route status with buspositions")
+        buspositions = buspositions.merge(equity_measures_byroute[list(unadded_equity_route_columns)], left_on="route_number", right_index=True, suffixes=("", ""), how="left")
     
     # create temp dataframe to load speed summary data
-    speed_columns = ["speed_mean", "speed_stdev"]
-    equity_measures_temp = pd.DataFrame(columns=])
+    speed_columns = ["count", "speed_mean", "speed_stdev", "speed_coeff_var", "speed_ci_lower", "speed_ci_upper"]
+    equity_measures_temp = pd.DataFrame(columns=speed_columns)
 
+    # add index values for equity and non equity routes
+    for column in equity_measure_columns:
+        equity_measures_byroute = equity_measures_byroute.append(pd.Series(name="equity_" + column))
+        equity_measures_byroute = equity_measures_byroute.append(pd.Series(name="nonequity_" + column))
+
+    # overall measures
+    ## count
+    print("Adding counts")
+    equity_measures_byroute["count"] = buspositions.groupby(by="route_number")["speed"].count()
+    equity_measures_byroute.loc["service_area", "count"] = buspositions.speed.count()
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "count"] = buspositions[buspositions[column]==True].speed.count()
+        equity_measures_byroute.loc[equity_measure_nonequity, "count"] = buspositions[buspositions[column]==False].speed.count()
+    ## mean
+    print("Adding speed means")
     equity_measures_byroute["speed_mean"] = buspositions.groupby(by="route_number")["speed"].mean().astype(float)
-    equity_measures_byroute.loc["service_area", "speed"] = buspositions.speed.mean().astype(float)
+    equity_measures_byroute.loc["service_area", "speed_mean"] = buspositions.speed.mean().astype(float)
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "speed_mean"] = buspositions[buspositions[column]==True].speed.mean().astype(float)    
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_mean"] = buspositions[buspositions[column]==False].speed.mean().astype(float)            
+    ## standard deviation
+    print("Adding speed standard deviations")
     equity_measures_byroute["speed_stdev"] = buspositions.groupby(by="route_number")["speed"].std().astype(float)
-    equity_measures_byroute.loc["service_area", "speed"] = buspositions.speed.std().astype(float)
-    equity_measures_byroute["speed_coeff_var"] = equity_measures_byroute.speed_stdev / equity_measures_byroute.speed_mean
-    # R package about comparing coefficients of variation and testing for significance: https://cran.r-project.org/web/packages/cvequality/vignettes/how_to_test_CVs.html
+    equity_measures_byroute.loc["service_area", "speed_stdev"] = buspositions.speed.std().astype(float)
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_stdev"] = buspositions[buspositions[column]==True].speed.std().astype(float)
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_stdev"] = buspositions[buspositions[column]==False].speed.std().astype(float)        
+    ## coefficient of variation
+    ## R package about comparing coefficients of variation and testing for significance: https://cran.r-project.org/web/packages/cvequality/vignettes/how_to_test_CVs.html
+    print("Adding speed coefficients of variation")
+    equity_measures_byroute["speed_coeff_var"] = (equity_measures_byroute.speed_stdev / equity_measures_byroute.speed_mean) * 100
+    equity_measures_byroute.loc["service_area", "speed_coeff_var"] = (equity_measures_byroute.loc["service_area", "speed_stdev"] / equity_measures_byroute.loc["service_area", "speed_mean"]) * 100
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "speed_coeff_var"] = (equity_measures_byroute.loc[equity_measure_equity, "speed_stdev"] / equity_measures_byroute.loc[equity_measure_equity, "speed_mean"]) * 100    
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_coeff_var"] = (equity_measures_byroute.loc[equity_measure_nonequity, "speed_stdev"] / equity_measures_byroute.loc[equity_measure_nonequity, "speed_mean"]) * 100            
+    ## conf int
+    print("Adding speed confidence intervals")
+    equity_measures_byroute["speed_ci_lower"] = equity_measures_byroute.speed_mean - 1.96 * (equity_measures_byroute.speed_stdev / np.sqrt(equity_measures_byroute["count"]))
+    equity_measures_byroute.loc["service_area", "speed_ci_lower"] = equity_measures_byroute.loc["service_area", "speed_mean"] - 1.96 * (equity_measures_byroute.loc["service_area", "speed_stdev"] / np.sqrt(equity_measures_byroute.loc["service_area", "count"]))
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_ci_lower"] = equity_measures_byroute.loc[equity_measure_equity, "speed_mean"] - 1.96 * (equity_measures_byroute.loc[equity_measure_equity, "speed_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_equity, "count"]))   
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_ci_lower"] = equity_measures_byroute.loc[equity_measure_nonequity, "speed_mean"] - 1.96 * (equity_measures_byroute.loc[equity_measure_nonequity, "speed_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_nonequity, "count"]))
+    equity_measures_byroute["speed_ci_upper"] = equity_measures_byroute.speed_mean + 1.96 * (equity_measures_byroute.speed_stdev / np.sqrt(equity_measures_byroute["count"]))
+    equity_measures_byroute.loc["service_area", "speed_ci_upper"] = equity_measures_byroute.loc["service_area", "speed_mean"] + 1.96 * (equity_measures_byroute.loc["service_area", "speed_stdev"] / np.sqrt(equity_measures_byroute.loc["service_area", "count"]))    
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "speed_ci_upper"] = equity_measures_byroute.loc[equity_measure_equity, "speed_mean"] + 1.96 * (equity_measures_byroute.loc[equity_measure_equity, "speed_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_equity, "count"]))
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_ci_upper"] = equity_measures_byroute.loc[equity_measure_nonequity, "speed_mean"] + 1.96 * (equity_measures_byroute.loc[equity_measure_nonequity, "speed_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_nonequity, "count"]))
 
-    # calculate peak and off-peak speeds
-    morning_peak = (buspositions.timestamp.dt.hour > peak_cutoffs["am_start"]) & (buspositions.timestamp.dt.hour < peak_cutoffs["am_end"])
-    afternoon_peak = (buspositions.timestamp.dt.hour > peak_cutoffs["pm_start"]) & (buspositions.timestamp.dt.hour < peak_cutoffs["pm_end"])
+    # calculate peak and off-peak measures
+    print("Adding all measures for peak and off-peak periods")
+    morning_peak = ((buspositions.timestamp.dt.hour > peak_cutoffs["am_start"]) & (buspositions.timestamp.dt.hour < peak_cutoffs["am_end"]))
+    afternoon_peak = ((buspositions.timestamp.dt.hour > peak_cutoffs["pm_start"]) & (buspositions.timestamp.dt.hour < peak_cutoffs["pm_end"]))
+    ## count, peak and off-peak
+    equity_measures_byroute["peak_count"] = buspositions[(morning_peak) | (afternoon_peak)].groupby(by="route_number").speed.count()
+    equity_measures_byroute.loc["service_area", "peak_count"] = buspositions[(morning_peak) | (afternoon_peak)].speed.count()
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "peak_count"] = buspositions[(buspositions[column]==True) & ((morning_peak) | (afternoon_peak))].speed.count()
+        equity_measures_byroute.loc[equity_measure_nonequity, "peak_count"] = buspositions[(buspositions[column]==False) & ((morning_peak) | (afternoon_peak))].speed.count()        
+    equity_measures_byroute["offpeak_count"] = buspositions[(~morning_peak) & (~afternoon_peak)].groupby(by="route_number").speed.count()
+    equity_measures_byroute.loc["service_area", "offpeak_count"] = buspositions[(~morning_peak) & (~afternoon_peak)].speed.count()
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "offpeak_count"] = buspositions[(buspositions[column]==True) & ((~morning_peak) & (~afternoon_peak))].speed.count()
+        equity_measures_byroute.loc[equity_measure_nonequity, "offpeak_count"] = buspositions[(buspositions[column]==False) & ((~morning_peak) & (~afternoon_peak))].speed.count()        
+    ## mean, peak and off-peak
     equity_measures_byroute["speed_peak_mean"] = buspositions[(morning_peak) | (afternoon_peak)].groupby(by="route_number").speed.mean().astype(float)
+    equity_measures_byroute.loc["service_area", "speed_peak_mean"] = buspositions[(morning_peak) | (afternoon_peak)].speed.mean().astype(float)
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "speed_peak_mean"] = buspositions[(buspositions[column]==True) & ((morning_peak) | (afternoon_peak))].speed.mean().astype(float)
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_mean"] = buspositions[(buspositions[column]==False) & ((morning_peak) | (afternoon_peak))].speed.mean().astype(float)        
     equity_measures_byroute["speed_offpeak_mean"] = buspositions[(~morning_peak) & (~afternoon_peak)].groupby(by="route_number").speed.mean().astype(float)
+    equity_measures_byroute.loc["service_area", "speed_offpeak_mean"] = buspositions[(~morning_peak) & (~afternoon_peak)].speed.mean().astype(float)
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_mean"] = buspositions[(buspositions[column]==True) & ((~morning_peak) & (~afternoon_peak))].speed.mean().astype(float)
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_mean"] = buspositions[(buspositions[column]==False) & ((~morning_peak) & (~afternoon_peak))].speed.mean().astype(float)        
+    ## st dev, peak and off-peak
     equity_measures_byroute["speed_peak_stdev"] = buspositions[(morning_peak) | (afternoon_peak)].groupby(by="route_number").speed.std().astype(float)
-    equity_measures_byroute["speed_offpeak_stdev"] = buspositions[(~morning_peak) & (~afternoon_peak)].groupby(by="route_number").speed.std().astype(float)    
+    equity_measures_byroute.loc["service_area", "speed_peak_stdev"] = buspositions[(morning_peak) | (afternoon_peak)].speed.std().astype(float)
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_peak_stdev"] = buspositions[(buspositions[column]==True) & ((morning_peak) | (afternoon_peak))].speed.std().astype(float)
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_stdev"] = buspositions[(buspositions[column]==False) & ((morning_peak) | (afternoon_peak))].speed.std().astype(float)        
+    equity_measures_byroute["speed_offpeak_stdev"] = buspositions[(~morning_peak) & (~afternoon_peak)].groupby(by="route_number").speed.std().astype(float)
+    equity_measures_byroute.loc["service_area", "speed_offpeak_stdev"] = buspositions[(~morning_peak) & (~afternoon_peak)].speed.std().astype(float)
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_stdev"] = buspositions[(buspositions[column]==True) & ((~morning_peak) & (~afternoon_peak))].speed.std().astype(float)
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_stdev"] = buspositions[(buspositions[column]==False) & ((~morning_peak) & (~afternoon_peak))].speed.std().astype(float)        
+    ## coeff var, peak and off-peak
     equity_measures_byroute["speed_peak_coeff_var"] = equity_measures_byroute.speed_peak_stdev / equity_measures_byroute.speed_peak_mean
+    equity_measures_byroute.loc["service_area", "speed_peak_coeff_var"] = equity_measures_byroute.loc["service_area", "speed_peak_stdev"] / equity_measures_byroute.loc["service_area", "speed_peak_mean"]    
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+        equity_measures_byroute.loc[equity_measure_equity, "speed_peak_coeff_var"] = (equity_measures_byroute.loc[equity_measure_equity, "speed_peak_stdev"] / equity_measures_byroute.loc[equity_measure_equity, "speed_peak_mean"]) * 100
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_coeff_var"] = (equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_stdev"] / equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_mean"]) * 100
     equity_measures_byroute["speed_offpeak_coeff_var"] =  equity_measures_byroute.speed_offpeak_stdev / equity_measures_byroute.speed_offpeak_mean
+    equity_measures_byroute.loc["service_area", "speed_offpeak_coeff_var"] =  equity_measures_byroute.loc["service_area", "speed_offpeak_stdev"] / equity_measures_byroute.loc["service_area", "speed_offpeak_mean"]
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_coeff_var"] = (equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_stdev"] / equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_mean"]) * 100
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_coeff_var"] = (equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_stdev"] / equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_mean"]) * 100
+    ## conf int, peak and off-peak
+    ### peak
+    equity_measures_byroute["speed_peak_ci_lower"] = equity_measures_byroute.speed_peak_mean - 1.96 * (equity_measures_byroute.speed_peak_stdev / np.sqrt(equity_measures_byroute.peak_count))
+    equity_measures_byroute.loc["service_area", "speed_peak_ci_lower"] = equity_measures_byroute.loc["service_area", "speed_peak_mean"] - 1.96 * (equity_measures_byroute.loc["service_area", "speed_peak_stdev"] / np.sqrt(equity_measures_byroute.loc["service_area", "peak_count"]))
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_peak_ci_lower"] = equity_measures_byroute.loc[equity_measure_equity, "speed_peak_mean"] - 1.96 * (equity_measures_byroute.loc[equity_measure_equity, "speed_peak_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_equity, "peak_count"]))
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_ci_lower"] = equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_mean"] - 1.96 * (equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_nonequity, "peak_count"]))
+    equity_measures_byroute["speed_peak_ci_upper"] = equity_measures_byroute.speed_peak_mean + 1.96 * (equity_measures_byroute.speed_peak_stdev / np.sqrt(equity_measures_byroute.peak_count))
+    equity_measures_byroute.loc["service_area", "speed_peak_ci_upper"] = equity_measures_byroute.loc["service_area", "speed_peak_mean"] + 1.96 * (equity_measures_byroute.loc["service_area", "speed_peak_stdev"] / np.sqrt(equity_measures_byroute.loc["service_area", "peak_count"]))        
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_peak_ci_upper"] = equity_measures_byroute.loc[equity_measure_equity, "speed_peak_mean"] + 1.96 * (equity_measures_byroute.loc[equity_measure_equity, "speed_peak_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_equity, "peak_count"]))   
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_ci_upper"] = equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_mean"] + 1.96 * (equity_measures_byroute.loc[equity_measure_nonequity, "speed_peak_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_nonequity, "peak_count"]))           
+    ### off-peak
+    equity_measures_byroute["speed_offpeak_ci_lower"] = equity_measures_byroute.speed_offpeak_mean - 1.96 * (equity_measures_byroute.speed_offpeak_stdev / np.sqrt(equity_measures_byroute.offpeak_count))
+    equity_measures_byroute.loc["service_area", "speed_offpeak_ci_lower"] = equity_measures_byroute.loc["service_area", "speed_offpeak_mean"] - 1.96 * (equity_measures_byroute.loc["service_area", "speed_offpeak_stdev"] / np.sqrt(equity_measures_byroute.loc["service_area", "offpeak_count"]))        
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_ci_lower"] = equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_mean"] - 1.96 * (equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_equity, "offpeak_count"]))   
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_ci_lower"] = equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_mean"] - 1.96 * (equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_nonequity, "offpeak_count"]))           
+    equity_measures_byroute["speed_offpeak_ci_upper"] = equity_measures_byroute.speed_offpeak_mean + 1.96 * (equity_measures_byroute.speed_offpeak_stdev / np.sqrt(equity_measures_byroute.offpeak_count))
+    equity_measures_byroute.loc["service_area", "speed_offpeak_ci_upper"] = equity_measures_byroute.loc["service_area", "speed_offpeak_mean"] + 1.96 * (equity_measures_byroute.loc["service_area", "speed_offpeak_stdev"] / np.sqrt(equity_measures_byroute.loc["service_area", "offpeak_count"]))        
+    for column in equity_route_columns:
+        equity_measure_equity = "equity_" + column.split("_", 2)[2]
+        equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]        
+        equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_ci_upper"] = equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_mean"] + 1.96 * (equity_measures_byroute.loc[equity_measure_equity, "speed_offpeak_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_equity, "offpeak_count"]))
+        equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_ci_upper"] = equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_mean"] + 1.96 * (equity_measures_byroute.loc[equity_measure_nonequity, "speed_offpeak_stdev"] / np.sqrt(equity_measures_byroute.loc[equity_measure_nonequity, "offpeak_count"]))
 
-    return buspositions, equity_measures_byroute
+
+    # merge in ridership
+    if ridership_data_path is not None:
+        print("Adding ridership data")
+        ridership = pd.read_csv(ridership_data_path).set_index("service_or_route")
+        equity_measures_byroute = equity_measures_byroute.join(ridership, how="left")
+        ridership_columns = [col for col in equity_measures_byroute if "_pass_trips" in col]
+        # ridership sums for the service area and for equity routes
+        equity_measures_byroute.loc["service_area", ridership_columns] = equity_measures_byroute.iloc[:143][ridership_columns].sum() # iloc to avoid summing summary rows
+        for column in equity_route_columns:
+            equity_measure_equity = "equity_" + column.split("_", 2)[2]
+            equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+            equity_measures_byroute.loc[equity_measure_equity, ridership_columns] = equity_measures_byroute.iloc[:143][equity_measures_byroute[column]==True][ridership_columns].sum()
+            equity_measures_byroute.loc[equity_measure_nonequity, ridership_columns] = equity_measures_byroute.iloc[:143][equity_measures_byroute[column]==False][ridership_columns].sum()            
+        # fare means for the service area and for equity routes
+        fare_columns = [col for col in equity_measures_byroute if "_fare_recovery" in col]
+        equity_measures_byroute.loc["service_area", fare_columns] = equity_measures_byroute.iloc[:143][fare_columns].mean()
+        for column in equity_route_columns:
+            equity_measure_equity = "equity_" + column.split("_", 2)[2]
+            equity_measure_nonequity = "nonequity_" + column.split("_", 2)[2]
+            equity_measures_byroute.loc[equity_measure_equity, fare_columns] = equity_measures_byroute.iloc[:143][equity_measures_byroute[column]==True][fare_columns].mean()
+            equity_measures_byroute.loc[equity_measure_nonequity, fare_columns] = equity_measures_byroute.iloc[:143][equity_measures_byroute[column]==False][fare_columns].mean()            
+    else:
+        print("Returning no ridership data")
+        ridership = None
+
+    return buspositions, equity_measures_byroute, ridership
+
 # %% export geodataframes as layers to single geopackage
 # some resources:
 # https://gis.stackexchange.com/questions/307749/open-gpkg-embedded-layers-in-python
@@ -906,6 +1004,10 @@ def line_plots_speed(buspositions):
 
 # %% main routine
 def main():
+    #equity_measure_columns = ["prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty"]
+    #equity_count_columns = ["count_poc", "count_white", "count_latino_allraces", "count_black", "count_asian", "count_poverty"]
+    #equity_route_columns = [("equity_route_" + column) for column in equity_measure_columns]    
+    
     read_from_file = 0
     export_dataframes = 0
 
@@ -938,8 +1040,11 @@ def main():
     #clipped, equity_measures_byroute_v2 = determine_equity_routes_v2(equity_measures_byroute, routes_blockgroups_joined, blockgroups, projections_dict)
     route_shapes, equity_measures_byroute = determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups_withdata, projections_dict)
 
-    # associate speed and variability measures with block groups
-    buspositions_new, equity_measures_byroute = add_speed_data(buspositions, equity_measures_byroute)
+    # associate speed measures, variability measures, and ridership data with block groups
+    buspositions, equity_measures_byroute, ridership = add_speed_data(buspositions, equity_measures_byroute, ridership_data_path=ridership_data_path)
+
+    # calculate speeds by blockgroup
+    blockgroups_withdata = calculate_blockgroup_speeds(blockgroups_withdata, buspositions, projection=projections_dict["equal_area"])
 
     print("Done")
 if __name__ == "__main__":
