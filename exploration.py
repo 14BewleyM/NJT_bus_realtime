@@ -612,13 +612,15 @@ def calculate_blockgroup_speeds(blockgroups, buspositions, projection=None):
     print("Joining buspositions with blockgroups")
     blockgroups = gpd.sjoin(blockgroups, buspositions, how="left", op="contains")
 
-    columns_to_keep = ["gisjoin", "geometry", "prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty", "timestamp",
-                       "vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat", "time_elapsed_seconds", "headsign_crosswalk",
-                       "headsign_buspositions", "distance_traveled_cumul", "distance_traveled_prev", "speed", "equity_route_prop_poc", "equity_route_prop_white",
-                       "equity_route_prop_latino_allraces", "equity_route_prop_black", "equity_route_prop_asian", "equity_route_prop_poverty"]
+    columns_to_keep = ["gisjoin", "geometry", "prop_poc", "prop_white", "prop_latino_allraces", "prop_black", "prop_asian", "prop_poverty", "speed"]
+                       # don't need: "timestamp", "vehicle_id", "route_number", "run_number", "headsign", "has_service", "lon", "lat", 
+                       # "time_elapsed_seconds", "headsign_crosswalk", "headsign_buspositions", "distance_traveled_cumul", "distance_traveled_prev", 
+                       # "equity_route_prop_poc", "equity_route_prop_white", "equity_route_prop_latino_allraces", "equity_route_prop_black", "equity_route_prop_asian", "equity_route_prop_poverty"
 
     print("Dropping null speed observations and irrelevant columns (retaining gisjoin as unique blockgroup identifier)")
-    return blockgroups[blockgroups.speed.notna()][columns_to_keep] #.groupby(by="gisjoin").speed.mean()
+    return blockgroups[blockgroups.speed.notna()][columns_to_keep].groupby(by="gisjoin").agg({"speed": [np.mean, "count"], "geometry": "first", "prop_poc": "first", "prop_white": "first",
+                                                                                                "prop_latino_allraces": "first", "prop_black": "first", "prop_asian": "first", 
+                                                                                                "prop_poverty": "first"})
 
 # function to assign routes as equity routes
 def determine_equity_routes(equity_measures_byroute, route_shapes, blockgroups, projections_dict, columns=None, proportion_cutoffs=None, mileage_cutoff=1/3):
@@ -1064,6 +1066,7 @@ sns.lineplot(data=buspositions, # hue by weekday vs weekend
 # includes 95% confidence intervals by default!
 routes = pd.read_csv(gtfs_directory + "routes.txt")
 routes = routes.merge(pd.read_csv(gtfs_directory + "route_info.csv")[["route_short_name", "interstate_intrastate"]], on="route_short_name")
+# TODO put the interstate_intrastate merge into the main code
 buspositions = buspositions.merge(routes[["route_short_name", "interstate_intrastate"]], left_on="route_number", right_on="route_short_name", how="left")
 sns.lineplot(data=buspositions, 
             x=buspositions.timestamp.dt.hour, 
@@ -1079,3 +1082,12 @@ sns.relplot(data=buspositions,
             hue=buspositions.timestamp.dt.weekday.isin([0, 1, 2, 3, 4]), kind="line"
             )
 
+# scatterplots
+equity_measures_byroute.iloc[:143].plot.scatter("prop_poc", "speed_mean")
+equity_measures_byroute.iloc[:143].plot.scatter("prop_black", "speed_mean")
+equity_measures_byroute.iloc[:143].plot.scatter("prop_latino_allraces", "speed_mean")
+equity_measures_byroute.iloc[:143].plot.scatter("fy18_pass_trips", "speed_mean")
+sns.scatterplot(data=equity_measures_byroute.iloc[:143], x="prop_poc", y="speed_mean", hue="equity_route_prop_poc")
+sns.scatterplot(data=equity_measures_byroute.iloc[:143], x="prop_black", y="speed_mean", hue="equity_route_prop_black")
+
+# histograms
